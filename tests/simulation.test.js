@@ -1,4 +1,5 @@
 const request = require("supertest");
+const mongoose = require("mongoose");
 const app = require("../app");
 const User = require("../models/user");
 const Simulation = require("../models/simulation");
@@ -241,7 +242,17 @@ describe("Simulation Endpoints", () => {
         .get(`/api/v1/simulation/get/${otherSim._id}`)
         .set("Authorization", `Bearer ${token}`);
 
-      expect(res.statusCode).toBe(400);
+      expect(res.statusCode).toBe(403);
+    });
+
+    it("should return 404 for a non-existent simulation", async () => {
+      const missingId = new mongoose.Types.ObjectId().toString();
+      const res = await request(app)
+        .get(`/api/v1/simulation/get/${missingId}`)
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(res.statusCode).toBe(404);
+      expect(res.body.error).toContain("Simulation not found");
     });
   });
 
@@ -258,6 +269,16 @@ describe("Simulation Endpoints", () => {
       expect(res.body).toHaveProperty("completedModels");
       expect(res.body).toHaveProperty("progress");
       expect(res.body).toHaveProperty("simulationData");
+    });
+
+    it("should return 404 for a non-existent simulation", async () => {
+      const missingId = new mongoose.Types.ObjectId().toString();
+      const res = await request(app)
+        .get(`/api/v1/simulation/get/${missingId}/results`)
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(res.statusCode).toBe(404);
+      expect(res.body.error).toContain("Simulation not found");
     });
   });
 
@@ -287,7 +308,7 @@ describe("Simulation Endpoints", () => {
         .delete(`/api/v1/simulation/delete/${otherSim._id}`)
         .set("Authorization", `Bearer ${token}`);
 
-      expect(res.statusCode).toBe(400);
+      expect(res.statusCode).toBe(403);
     });
   });
 
@@ -309,7 +330,7 @@ describe("Simulation Endpoints", () => {
         .post(`/api/v1/simulation/cancel/${sim._id}`)
         .set("Authorization", `Bearer ${token}`);
 
-      expect(res.statusCode).toBe(400);
+      expect(res.statusCode).toBe(409);
       expect(res.body.error).toContain("Cannot cancel");
     });
   });

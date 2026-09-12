@@ -2,6 +2,12 @@ const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const crypto = require("node:crypto");
+const {
+  BadRequestError,
+  UnauthorizedError,
+  ForbiddenError,
+  ConflictError,
+} = require("../utils/errors");
 require("dotenv").config();
 
 // Refresh tokens are high-entropy 7-day JWTs, so a plain SHA-256 digest is
@@ -76,28 +82,28 @@ userSchema.statics.login = async function (email, password) {
   const user = await this.findOne({ email }).select("+password +isActive");
 
   if (!user) {
-    throw new Error("Invalid email or password");
+    throw new UnauthorizedError("Invalid email or password");
   }
   if (!user.isActive) {
-    throw new Error("Account has been suspended");
+    throw new ForbiddenError("Account has been suspended");
   }
   const isPasswordValid = await bcrypt.compare(password, user.password);
   if (!isPasswordValid) {
-    throw new Error("Invalid email or password");
+    throw new UnauthorizedError("Invalid email or password");
   }
   return user;
 };
 
 userSchema.statics.register = async function (username, email, password, affiliation = "") {
   if (!username || !email || !password) {
-    throw new Error("All fields (username, email, password) are required");
+    throw new BadRequestError("All fields (username, email, password) are required");
   }
   const exist = await this.findOne({ email });
   if (exist) {
-    throw new Error("User already exists");
+    throw new ConflictError("User already exists");
   }
   if (password.length > 12) {
-    throw new Error("Password cannot exceed 12 characters");
+    throw new BadRequestError("Password cannot exceed 12 characters");
   }
   return await this.create({ username, email, password, affiliation });
 };

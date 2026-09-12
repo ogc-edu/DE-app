@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { ForbiddenError, NotFoundError, ConflictError } = require("../utils/errors");
 //schema definition
 //basic datatypes = String, Number, Boolean, Date
 
@@ -225,14 +226,14 @@ simulationSchema.statics.deleteSimulation = async function (
 ) {
   const simulation = await this.getSimulationById(simulationId);
   if (!simulation) {
-    throw new Error("Simulation not found");
+    throw new NotFoundError("Simulation not found");
   }
   if (simulation.userId.toString() !== userId) {
-    throw new Error("Unauthorized");
+    throw new ForbiddenError("Unauthorized");
   }
   const deletedSimulation = await this.findByIdAndDelete(simulationId);
   if (!deletedSimulation) {
-    throw new Error("Simulation not found or already deleted");
+    throw new NotFoundError("Simulation not found or already deleted");
   }
   return deletedSimulation._id.toString();
 };
@@ -244,15 +245,15 @@ simulationSchema.statics.cancelSimulation = async function (
 ) {
   const simulation = await this.findById(simulationId);
   if (!simulation) {
-    throw new Error("Simulation not found");
+    throw new NotFoundError("Simulation not found");
   }
   if (simulation.userId.toString() !== userId) {
-    throw new Error("Unauthorized");
+    throw new ForbiddenError("Unauthorized");
   }
   // Only in-flight jobs can be cancelled — terminal results must not be
   // overwritten by a late cancel (workers check status before spawning).
   if (simulation.status !== "pending" && simulation.status !== "running") {
-    throw new Error(`Cannot cancel a simulation in "${simulation.status}" status`);
+    throw new ConflictError(`Cannot cancel a simulation in "${simulation.status}" status`);
   }
   const success = await this.findByIdAndUpdate(
     simulationId,

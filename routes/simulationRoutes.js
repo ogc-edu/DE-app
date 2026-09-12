@@ -152,8 +152,10 @@ router.get("/get", getAllSimulations);
  *     responses:
  *       200:
  *         description: Simulation results data
- *       400:
- *         description: Not found or unauthorized
+ *       403:
+ *         description: Not authorized to access this simulation
+ *       404:
+ *         description: Simulation not found
  */
 router.get("/get/:simulationId/results", getSimulationResults);
 
@@ -174,6 +176,10 @@ router.get("/get/:simulationId/results", getSimulationResults);
  *     responses:
  *       200:
  *         description: Simulation details
+ *       403:
+ *         description: Not authorized to access this simulation
+ *       404:
+ *         description: Simulation not found
  */
 router.get("/get/:simulationId", getSingleSimulation);
 
@@ -194,6 +200,10 @@ router.get("/get/:simulationId", getSingleSimulation);
  *     responses:
  *       200:
  *         description: Simulation deleted
+ *       403:
+ *         description: Not authorized to delete this simulation
+ *       404:
+ *         description: Simulation not found
  */
 router.delete("/delete/:simulationId", deleteSimulation);
 
@@ -214,6 +224,12 @@ router.delete("/delete/:simulationId", deleteSimulation);
  *     responses:
  *       200:
  *         description: Simulation cancelled
+ *       403:
+ *         description: Not authorized to cancel this simulation
+ *       404:
+ *         description: Simulation not found
+ *       409:
+ *         description: Simulation is already in a terminal status
  */
 router.post("/cancel/:simulationId", cancelSimulation);
 

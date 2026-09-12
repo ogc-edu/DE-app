@@ -90,6 +90,8 @@ router.post("/profile/picture", validate(confirmPictureSchema), confirmProfilePi
  *       200:
  *         description: Profile updated
  *       400:
+ *         description: Validation error
+ *       409:
  *         description: Email already in use
  */
 router.patch("/profile", validate(updateProfileSchema), updateProfile);
@@ -118,6 +120,8 @@ router.patch("/profile", validate(updateProfileSchema), updateProfile);
  *       200:
  *         description: Password changed
  *       400:
+ *         description: Validation error
+ *       401:
  *         description: Current password incorrect
  */
 router.patch("/password", validate(changePasswordSchema), changePassword);

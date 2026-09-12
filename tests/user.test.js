@@ -72,8 +72,8 @@ describe("User Profile Endpoints", () => {
         .set("Authorization", `Bearer ${token}`)
         .send({ email: "taken@example.com" });
 
-      expect(res.statusCode).toBe(400);
-      expect(res.body.message).toContain("already in use");
+      expect(res.statusCode).toBe(409);
+      expect(res.body.error).toContain("already in use");
     });
 
     it("should update affiliation", async () => {
@@ -104,8 +104,8 @@ describe("User Profile Endpoints", () => {
         .set("Authorization", `Bearer ${token}`)
         .send({ currentPassword: "wrongpassword", newPassword: "newpass123" });
 
-      expect(res.statusCode).toBe(400);
-      expect(res.body.message).toContain("incorrect");
+      expect(res.statusCode).toBe(401);
+      expect(res.body.error).toContain("incorrect");
     });
 
     it("should verify new password works for login", async () => {

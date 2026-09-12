@@ -3,6 +3,7 @@ const bcrypt = require("bcrypt");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { PutObjectCommand } = require("@aws-sdk/client-s3");
 const { s3Client, profileImageKey, buildPublicObjectUrl } = require("../config/s3");
+const { UnauthorizedError, ConflictError } = require("../utils/errors");
 
 // Content types allowed for profile pictures (frontend enforces the 5 MB cap;
 // a fixed per-user key means every upload overwrites the same object so bucket
@@ -34,7 +35,7 @@ const updateProfile = async (req, res, next) => {
     if (email) {
       const existing = await User.findOne({ email, _id: { $ne: req.userId } });
       if (existing) {
-        return res.status(400).json({ message: "Email already in use" });
+        throw new ConflictError("Email already in use");
       }
       user.email = email;
     }
@@ -108,7 +109,7 @@ const changePassword = async (req, res, next) => {
 
     const isMatch = await bcrypt.compare(currentPassword, user.password);
     if (!isMatch) {
-      return res.status(400).json({ message: "Current password is incorrect" });
+      throw new UnauthorizedError("Current password is incorrect");
     }
 
     if (newPassword.length > 12) {

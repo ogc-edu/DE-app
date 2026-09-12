@@ -23,7 +23,7 @@ describe("Auth Endpoints", () => {
       await User.register(testUser.username, testUser.email, testUser.password);
       const res = await request(app).post("/api/v1/register").send(testUser);
 
-      expect(res.statusCode).toBe(400);
+      expect(res.statusCode).toBe(409);
     });
 
     it("should not register with missing fields", async () => {
@@ -65,7 +65,7 @@ describe("Auth Endpoints", () => {
         .post("/api/v1/login")
         .send({ email: testUser.email, password: "wrongpassword" });
 
-      expect(res.statusCode).toBe(400);
+      expect(res.statusCode).toBe(401);
     });
 
     it("should not login with non-existent email", async () => {
@@ -73,7 +73,7 @@ describe("Auth Endpoints", () => {
         .post("/api/v1/login")
         .send({ email: "noone@example.com", password: "password123" });
 
-      expect(res.statusCode).toBe(400);
+      expect(res.statusCode).toBe(401);
     });
 
     it("should not login if account is suspended", async () => {
@@ -85,7 +85,7 @@ describe("Auth Endpoints", () => {
         .post("/api/v1/login")
         .send({ email: testUser.email, password: testUser.password });
 
-      expect(res.statusCode).toBe(400);
+      expect(res.statusCode).toBe(403);
       expect(res.body.error).toContain("suspended");
     });
   });

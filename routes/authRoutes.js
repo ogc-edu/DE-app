@@ -28,7 +28,11 @@ const { registerSchema, loginSchema } = require("../validators/authValidators");
  *       200:
  *         description: Login successful, returns access token and sets refresh token cookie
  *       400:
- *         description: Invalid credentials or suspended account
+ *         description: Validation error
+ *       401:
+ *         description: Invalid credentials
+ *       403:
+ *         description: Account has been suspended
  */
 router.post("/login", validate(loginSchema), login);
 
@@ -56,7 +60,9 @@ router.post("/login", validate(loginSchema), login);
  *       201:
  *         description: User registered successfully
  *       400:
- *         description: Validation error or duplicate user
+ *         description: Validation error
+ *       409:
+ *         description: User already exists
  */
 router.post("/register", validate(registerSchema), register);
 

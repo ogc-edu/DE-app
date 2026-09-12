@@ -9,6 +9,12 @@ const errorHandler = (err, req, res, next) => {
     logger.error(err.stack.split("\n")[1].trim());
   }
 
+  // Typed errors (utils/errors.js) carry their own status; honor them before
+  // the name-based mappings so they never hit the generic 400 fallback.
+  if (typeof err.statusCode === "number") {
+    error = { statusCode: err.statusCode, message: err.message };
+  }
+
   if (err.name === "CastError") {
     const message = `Resource not found with id : ${err.value}`;
     error = { statusCode: 404, message };
@@ -27,10 +33,6 @@ const errorHandler = (err, req, res, next) => {
 
   if (err.name === "JsonWebTokenError" || err.name === "TokenExpiredError") {
     error = { statusCode: 401, message: "Token is not valid or has expired" };
-  }
-
-  if (err.name === "Error") {
-    error.statusCode = 400;
   }
 
   const statusCode = error.statusCode || 500;

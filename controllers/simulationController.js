@@ -2,6 +2,7 @@ const simulations = require("../models/simulation");
 const { sendSimulationJob } = require("../config/sqs");
 const { parseImportFile } = require("../utils/importParser");
 const logger = require("../config/logger");
+const { ForbiddenError, NotFoundError } = require("../utils/errors");
 
 const createSimulation = async (req, res, next) => {
   try {
@@ -145,10 +146,10 @@ const getSingleSimulation = async (req, res, next) => {
     const userId = req.userId;
     const simulation = await simulations.getSimulationById(simulationId);
     if (!simulation) {
-      throw new Error("Simulation not found");
+      throw new NotFoundError("Simulation not found");
     }
     if (simulation.userId.toString() !== userId) {
-      throw new Error("user id not authorized to access this simulation");
+      throw new ForbiddenError("user id not authorized to access this simulation");
     }
     res.status(200).json({ simulation });
   } catch (err) {
@@ -162,10 +163,10 @@ const getSimulationResults = async (req, res, next) => {
     const userId = req.userId;
     const simulation = await simulations.getSimulationById(simulationId);
     if (!simulation) {
-      throw new Error("Simulation not found");
+      throw new NotFoundError("Simulation not found");
     }
     if (simulation.userId.toString() !== userId) {
-      throw new Error("user id not authorized to access this simulation");
+      throw new ForbiddenError("user id not authorized to access this simulation");
     }
     res.status(200).json({
       simulationId: simulation._id,
