@@ -3,12 +3,17 @@ services:
   mongo:
     image: mongodb/mongodb-atlas-local:8.0.0
     container_name: de-db
+    environment:
+      # Tests, .env and .env.example all authenticate as root:password123
+      # (authSource=admin), so the container must actually create that user.
+      MONGODB_INITDB_ROOT_USERNAME: root
+      MONGODB_INITDB_ROOT_PASSWORD: password123
     ports:
       - "27017:27017"
     volumes:
       - mongo-data:/data/db
     healthcheck:
-      test: mongosh --eval "try { rs.status() } catch(e) { rs.initiate({ _id: 'replicaset', members: [{ _id: 0, host: 'localhost:27017' }] }) }" --quiet
+      test: ["CMD-SHELL", "mongosh 'mongodb://root:password123@localhost:27017/?directConnection=true&authSource=admin' --quiet --eval 'try { rs.status() } catch(e) { rs.initiate({ _id: \"replicaset\", members: [{ _id: 0, host: \"localhost:27017\" }] }) }'"]
       interval: 10s
       timeout: 10s
       retries: 10
@@ -22,7 +27,7 @@ services:
       - "3000:3000"
     env_file: .env
     environment:
-      MONGODB_URI: mongodb://mongo:27017/Dashboard-Database?replicaSet=replicaset&directConnection=true
+      MONGODB_URI: mongodb://root:password123@mongo:27017/Dashboard-Database?directConnection=true&authSource=admin
     volumes:
       - .:/app
       - /app/node_modules

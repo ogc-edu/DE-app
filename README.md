@@ -70,7 +70,8 @@ See the [API Reference](./docs/api-reference.md) for complete details.
 ```bash
 npm start              # Start production server
 npm run dev            # Start dev server (nodemon hot-reload)
-npm test               # Run all tests
+npm test               # Run all tests -- requires replica-set MongoDB:
+                       #   docker compose up -d mongo   (container de-db, port 27017)
 npm run test:watch     # Run tests in watch mode
 npm run test:coverage  # Run tests with coverage report
 ```

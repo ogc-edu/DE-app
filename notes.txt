@@ -1,1 +1,3 @@
-docker run -d --name atlas-mongo -p 27017:27017 -v atlas_mongo_data:/data/db -e MONGODB_INITDB_ROOT_USERNAME=root -e MONGODB_INITDB_ROOT_PASSWORD=password123 mongodb/mongodb-atlas-local:8.0.0-20260626T114405Z
+# Dev/test MongoDB (replica set via mongodb/mongodb-atlas-local, container: de-db)
+# Option A: docker compose up -d mongo
+# Option B: docker start de-db || docker run -d -p 27017:27017 --name de-db mongodb/mongodb-atlas-local:8.0.0
