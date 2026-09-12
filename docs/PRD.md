@@ -44,27 +44,59 @@ Backend (serves results to frontend)
 ### Auth System
 
 - Access token: JWT, 1-hour expiry, sent via `Authorization: Bearer` header
-- Refresh token: long-lived, stored in httpOnly cookie, exchanged at `/api/refresh` without user re-entering credentials
+- Refresh token: long-lived (7d), stored in an httpOnly cookie and exchanged at
+  `/api/v1/refresh` without the user re-entering credentials. **Built as:** only the
+  SHA-256 digest is persisted (`users.refreshTokenHash`), compared in constant time;
+  rotated on every refresh; cleared on logout, suspension and password change.
 - Roles: `user` (researcher) and `admin` — enforced at route level via middleware
+- All routes are versioned under `/api/v1` (this section's unversioned paths predate that decision)
 
-### Simulation Model (existing schema, needs refinement)
+### Simulation Model (**resolved** — schema refined as specified)
 
 - Input: arrays of `functions` (1–10), `mutation` (1–10), `crossover` (1–4), `selection` (1–2)
-- Output: `simulationData` to store concrete results grid — replace current `type: []` with structured schema: array of `{ functionId, mutationId, crossoverId, selectionId, lowestFitness }`
-- Progress: `completedModels / totalModels` → percentage, written by EC2 worker
+- Output: `simulationData` stores the concrete results grid as a structured subdocument
+  array of `{ functionId, mutationId, crossoverId, selectionId, lowestFitness }`
+- Progress: `completedModels / totalModels` → percentage, written by the EC2 worker
+- **Also built:** the DE knobs `np` / `f` / `cr` / `gen` / `dim` are Zod-validated,
+  persisted with defaults, and shipped in the SQS job; `running` was added to the
+  status enum; `cancelSimulation` refuses terminal statuses (409)
+
+### Job Queue (built)
+
+- `POST /api/v1/simulation/create` enqueues one SQS job per simulation
+  (`config/sqs.js`). If the enqueue fails the simulation is marked `failed` and the
+  201 response carries `queued: false`, so nothing hangs in `pending`.
+
+### Data Import (built, beyond the original PRD)
+
+- `POST /api/v1/simulation/import` accepts a `.txt` results file and stores it as an
+  already-`completed` simulation; parse failures return `400` with line-numbered
+  `errors[]`.
+
+### Profile Pictures (built, beyond the original PRD)
+
+- `GET /api/v1/user/profile/presign` issues a presigned S3 PUT URL; the client uploads
+  directly to S3 and confirms via `POST /api/v1/user/profile/picture`.
+
+### API Error Semantics (built)
+
+- Domain errors carry typed status codes (401/403/404/409) via `utils/errors.js`; see
+  the matrix in `docs/middleware.md`.
 
 ### Admin Endpoints (new)
 
-- `GET /api/admin/users` — list all users
-- `PATCH /api/admin/users/:id/suspend` — toggle user active status
-- `GET /api/admin/simulations` — list any user's simulations
-- `GET /api/admin/queue` — SQS queue attributes (depth, approximate age)
+- `GET /api/v1/admin/users` — list all users (paginated)
+- `GET /api/v1/admin/users/:id` — single user
+- `PATCH /api/v1/admin/users/:id/suspend` — toggle user active status (also ends the user's session)
+- `GET /api/v1/admin/simulations` — list any user's simulations
+- `DELETE /api/v1/admin/simulations/:id` — delete any simulation
+- `GET /api/v1/admin/queue` — real SQS queue attributes (depth, in-flight, delayed, oldest message age)
 
 ### Deployment
 
 - `Dockerfile` multi-stage (Node 20 slim) + `.dockerignore`
 - Env vars injected at runtime via EC2 task definition or `docker run -e`
-- No Secrets Manager, no S3 (v1)
+- No Secrets Manager (env vars suffice for v1). S3 **is** used, for profile pictures.
 
 ## 5. Testing Decisions
 
@@ -75,15 +107,19 @@ A good test validates behavior visible at the API boundary:
 - Admin: user with `role: "user"` cannot access admin endpoints; `role: "admin"` can
 - Refresh: expired access token + valid refresh cookie returns new access token
 
-**Prior art:** No existing tests in repo — this is greenfield. Add `jest` + `supertest` as dev dependencies. Test structure mirrors MVC layout: `tests/auth.test.js`, `tests/simulation.test.js`, `tests/admin.test.js`.
+**Prior art:** No existing tests in repo — this was greenfield. `jest` + `supertest` are
+dev dependencies and the structure mirrors the MVC layout. **Built:** 107 tests across 6
+suites — `tests/auth.test.js`, `tests/user.test.js`, `tests/simulation.test.js`,
+`tests/admin.test.js`, `tests/import.test.js`, `tests/importParser.test.js`.
+See [Testing](./testing.md).
 
 ## 6. Out of Scope
 
 - Frontend SPA (separate repo, consumes this API)
-- S3/profile picture upload
 - AWS Secrets Manager (env vars suffice for v1)
 - Email verification flow (`isVerified` field deferred)
-- Worker/EC2-side code (this repo is the backend API only)
+- Worker/EC2-side code (this repo is the backend API only — the worker lives in `DE-forEC2`)
 - CI/CD pipeline
 - Rate limiting
+- Refresh-token reuse detection (`jti` blacklist)
 - WebSocket/polling strategy (frontend concern)

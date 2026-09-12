@@ -16,12 +16,13 @@ Both models use Mongoose with the `timestamps: true` option, which automatically
 | `username` | String | yes | — | 3–50 chars, trimmed |
 | `email` | String | yes | — | unique, regex-validated, lowercased, trimmed |
 | `password` | String | yes | — | min 6 chars, `select: false` (never returned in queries), hashed by pre-save hook |
-| `isVerified` | Boolean | no | `false` | Email verification (deferred per PRD) |
+| `isVerified` | Boolean | no | `false` | Email verification (deferred per PRD — never read by any code path) |
 | `role` | String | no | `"user"` | Enum: `"admin"`, `"user"` |
 | `isActive` | Boolean | no | `true` | Suspended users cannot login or access protected routes |
-| `refreshToken` | String | no | `null` | `select: false`, stores current refresh token for rotation validation |
-| `profilePicture` | String | no | `null` | S3 URL (deferred per PRD) |
-| `simulationCount` | Number | no | `0` | Counter for user's simulations |
+| `refreshTokenHash` | String | no | `null` | `select: false`; SHA-256 hex digest of the current refresh token — never the token itself |
+| `profilePicture` | String | no | `null` | Public S3 object URL, set via the presign + confirm flow |
+| `affiliation` | String | no | `""` | Free-text institution, trimmed; accepted at register and profile update |
+| `simulationCount` | Number | no | `0` | Declared but never incremented by any code path |
 | `createdAt` | Date | auto | `Date.now` | Managed by `timestamps: true`, immutable |
 | `updatedAt` | Date | auto | `Date.now` | Managed by `timestamps: true`, auto-updated on save |
 
@@ -39,10 +40,10 @@ Authenticates a user by email and password.
 
 **Flow:**
 1. Find user by email, selecting `+password +isActive`
-2. If user not found → throw `"Invalid email or password"`
-3. If `isActive === false` → throw `"Account has been suspended"`
+2. If user not found → throw `UnauthorizedError("Invalid email or password")` (401)
+3. If `isActive === false` → throw `ForbiddenError("Account has been suspended")` (403)
 4. Compare password with bcrypt hash
-5. If mismatch → throw `"Invalid email or password"`
+5. If mismatch → throw `UnauthorizedError("Invalid email or password")` (401)
 6. Return user document
 
 **Returns:** User document (with password field loaded)
@@ -52,9 +53,9 @@ Authenticates a user by email and password.
 Creates a new user account.
 
 **Flow:**
-1. Validate all fields are present
-2. Check for existing email → throw `"User already exists"`
-3. Validate password length ≤ 12 chars
+1. Validate all fields are present → `BadRequestError` (400)
+2. Check for existing email → throw `ConflictError("User already exists")` (409)
+3. Validate password length ≤ 12 chars → `BadRequestError` (400)
 4. Create user document (triggers pre-save hook for password hashing)
 
 **Returns:** Created user document
@@ -83,15 +84,25 @@ Generates a long-lived refresh token with a unique `jti` claim to ensure each to
 
 #### `user.saveRefreshToken(token)`
 
-Stores the refresh token on the user document and saves to DB. Used during login and token rotation.
+Hashes the raw token with SHA-256 and stores the digest in `refreshTokenHash`, then
+saves. Used during login and token rotation. The raw token is never persisted.
 
 **Returns:** Saved user document
 
 #### `user.clearRefreshToken()`
 
-Sets `refreshToken` to `null` and saves. Used during logout.
+Sets `refreshTokenHash` to `null` and saves. Used during logout; suspension and
+password change null the field directly so they can save once alongside their own
+changes.
 
 **Returns:** Saved user document
+
+#### `User.hashRefreshToken(token)` (static)
+
+Returns the SHA-256 hex digest of a raw refresh token. Exposed so `/refresh` can hash
+the presented cookie and compare it with `crypto.timingSafeEqual`.
+
+**Returns:** 64-character hex string
 
 ### Middleware (Hooks)
 
@@ -118,7 +129,7 @@ this.password = await bcrypt.hash(this.password, salt);
 |---|---|---|---|---|
 | `userId` | ObjectId | yes | — | Ref: `User`, indexed |
 | `simulationData` | Array<Subdoc> | no | `[]` | Results grid, populated by EC2 workers |
-| `status` | String | yes | `"pending"` | Enum: `pending`, `completed`, `failed`, `cancelled`. Indexed |
+| `status` | String | yes | `"pending"` | Enum: `pending`, `running`, `completed`, `failed`, `cancelled`. Indexed. Workers set `running` |
 | `functions` | Number[] | yes | — | Integer array, values 1–10 |
 | `methods.mutation` | Number[] | yes | — | Integer array, values 1–10 |
 | `methods.crossover` | Number[] | yes | — | Integer array, values 1–4 |
@@ -126,6 +137,11 @@ this.password = await bcrypt.hash(this.password, salt);
 | `totalModels` | Number | yes | `0` | Computed on create: Cartesian product of all arrays |
 | `completedModels` | Number | no | `0` | Updated by workers as models complete |
 | `progress` | Number | no | `0` | 0–100 percentage |
+| `np` | Number | no | `15` | DE population size, 10–40 |
+| `f` | Number | no | `0.5` | DE scaling factor, 0.1–2.0 |
+| `cr` | Number | no | `0.9` | DE crossover rate, 0.01–1.0 |
+| `gen` | Number | no | `1000` | Generations, ≥ 1 |
+| `dim` | Number | no | `30` | Problem dimensionality, 1–30 (matches the `de.cpp` limit) |
 | `createdAt` | Date | auto | `Date.now` | Managed by `timestamps: true` |
 | `updatedAt` | Date | auto | `Date.now` | Managed by `timestamps: true` |
 
@@ -160,9 +176,11 @@ const isIntegerArray = (arr) => arr.length > 0 && arr.every(Number.isInteger);
 
 ### Static Methods
 
-#### `Simulation.createSimulation(userId, functions, methods)`
+#### `Simulation.createSimulation(userId, functions, methods, params)`
 
 Creates a new simulation with `totalModels` computed from the Cartesian product.
+`params` carries the DE knobs (`np`, `f`, `cr`, `gen`, `dim`); each falls back to its
+schema default when omitted, so a direct model call persists a complete job spec.
 
 **Calculation:**
 ```
@@ -198,8 +216,8 @@ Retrieves a single simulation by its ObjectId.
 Deletes a simulation after verifying ownership.
 
 **Flow:**
-1. Find simulation by ID → throw if not found
-2. Check `simulation.userId` matches `userId` → throw `"Unauthorized"` if mismatch
+1. Find simulation by ID → throw `NotFoundError("Simulation not found")` (404)
+2. Check `simulation.userId` matches `userId` → throw `ForbiddenError("Unauthorized")` (403) if mismatch
 3. Delete the document
 
 **Returns:** Deleted simulation's `_id` as string
@@ -208,7 +226,22 @@ Deletes a simulation after verifying ownership.
 
 Cancels a simulation by setting `status: "cancelled"` after verifying ownership. Uses `{ new: true }` option. `updatedAt` is auto-managed by `timestamps: true`.
 
+**Flow:**
+1. Find simulation by ID → throw `NotFoundError("Simulation not found")` (404)
+2. Ownership mismatch → throw `ForbiddenError("Unauthorized")` (403)
+3. Status is not `pending` or `running` → throw
+   `ConflictError('Cannot cancel a simulation in "<status>" status')` (409), so a
+   terminal result is never overwritten by a late cancel
+
 **Returns:** Cancelled simulation's `_id` as string
+
+#### `Simulation.importSimulation(userId, data)`
+
+Persists a user-uploaded results file as an already-`completed` simulation
+(`progress: 100`, `completedModels === totalModels`). No SQS job is enqueued —
+imported data is final. `totalModels` is the number of parsed rows.
+
+**Returns:** Created simulation document
 
 ---
 

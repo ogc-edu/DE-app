@@ -26,31 +26,48 @@ npm install
 
 ### 3. Configure environment variables
 
-Create a `.env` file in the project root:
+Copy the committed template and fill in your own secrets:
+
+```bash
+cp .env.example .env
+```
 
 ```env
-MONGODB_URI=mongodb://localhost:27017/Dashboard-Database?replicaSet=replicaset&directConnection=true
+MONGODB_URI=mongodb://root:password123@localhost:27017/Dashboard-Database?directConnection=true&authSource=admin
 JWT_SECRET=your-secure-jwt-secret
 JWT_REFRESH_SECRET=your-secure-refresh-secret
 DB_NAME=Dashboard-Database
 CORS_ORIGIN=http://localhost:3001,http://localhost:5173
+
+# AWS — leave the keys empty to use the default credential chain / EC2 IAM role
+AWS_REGION=ap-southeast-1
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+S3_BUCKET_NAME=your-profile-picture-bucket
+SQS_QUEUE_URL=https://sqs.<region>.amazonaws.com/<account-id>/<queue-name>
 ```
+
+> Without `SQS_QUEUE_URL`, `POST /simulation/create` still returns 201 but with
+> `queued: false` (and marks the simulation `failed`), and `GET /admin/queue` returns 503.
 
 > **Important:** Use strong, random secrets for `JWT_SECRET` and `JWT_REFRESH_SECRET` in production. The `.env` file is gitignored and will not be committed.
 
 ### 4. Start MongoDB
 
-Ensure MongoDB is running locally with a replica set. The replica set is required for Mongoose `timestamps` and transactions.
+MongoDB must run as a **replica set**, and it must have the `root` user the connection
+strings authenticate as. The canonical way to get both is the compose service:
 
-**Start MongoDB with replica set (local install):**
 ```bash
-mongod --replSet replicaset --port 27017
+docker compose up -d mongo    # container de-db, port 27017
 ```
 
-**Initialize the replica set (first run only):**
-```bash
-mongosh --eval "rs.initiate({ _id: 'replicaset', members: [{ _id: 0, host: 'localhost:27017' }] })"
-```
+It starts `mongodb/mongodb-atlas-local:8.0.0`, creates `root:password123`, and
+auto-initiates the replica set through its healthcheck. This is also the prerequisite
+for `npm test`.
+
+`notes.txt` records the equivalent standalone `docker run` under the same container
+name. A plain local `mongod` without a replica set (and without that user) will fail
+the connection.
 
 ### 5. Start the development server
 
@@ -150,6 +167,7 @@ docker run -p 3000:3000 \
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `MONGODB_URI` | yes | `mongodb://localhost:27017` | MongoDB connection string |
+| `MONGODB_URI_TEST` | no | local `de-db` URI | Overrides the connection used by `npm test` |
 | `DB_NAME` | no | `Dashboard-Database` | Database name |
 | `JWT_SECRET` | yes | — | Secret for signing access tokens |
 | `JWT_REFRESH_SECRET` | yes | — | Secret for signing refresh tokens |
@@ -157,6 +175,13 @@ docker run -p 3000:3000 \
 | `PORT` | no | `3000` | Server port |
 | `NODE_ENV` | no | `development` | Environment (`production` enables secure cookies) |
 | `LOG_LEVEL` | no | `info` | Winston log level (`error`, `warn`, `info`, `debug`) |
+| `AWS_REGION` | no | `us-east-1` | Region for the S3 and SQS clients |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | no | — | Leave empty to use the default credential chain / EC2 IAM role |
+| `S3_BUCKET_NAME` | no | — | Bucket for profile pictures |
+| `SQS_QUEUE_URL` | no | — | Full queue URL for simulation jobs; without it create returns `queued: false` and `/admin/queue` returns 503 |
+
+> `config/s3.js` and `config/sqs.js` read their environment variables **at require
+> time**, so these must be set before the app is imported.
 
 ---
 
@@ -179,7 +204,7 @@ There is no admin registration endpoint. To create an admin user:
 ### Via MongoDB Shell
 
 ```bash
-mongosh "mongodb://localhost:27017/Dashboard-Database"
+mongosh "mongodb://root:password123@localhost:27017/Dashboard-Database?directConnection=true&authSource=admin"
 ```
 
 ```js
@@ -224,7 +249,7 @@ This provides a full UI for exploring and testing all API endpoints, including a
 ### MongoDB connection errors
 
 **Error:** `MongoServerSelectionError: connect ECONNREFUSED`
-- Ensure MongoDB is running: `mongod --replSet replicaset`
+- Ensure MongoDB is running: `docker compose up -d mongo` (container `de-db`)
 - Check the `MONGODB_URI` in `.env` matches your MongoDB port
 
 **Error:** `MongoServerError: not running with replication`

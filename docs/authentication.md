@@ -7,7 +7,7 @@ The backend uses a dual-token JWT authentication system with refresh token rotat
 | Token | Purpose | Storage | Expiry | Secret |
 |---|---|---|---|---|
 | **Access token** | Authenticate API requests | `Authorization: Bearer <token>` header | 1 hour | `JWT_SECRET` |
-| **Refresh token** | Obtain new access tokens without re-login | httpOnly cookie (`refreshToken`) | 7 days | `JWT_REFRESH_SECRET` |
+| **Refresh token** | Obtain new access tokens without re-login | httpOnly cookie (`refreshToken`); SHA-256 digest in `users.refreshTokenHash` | 7 days | `JWT_REFRESH_SECRET` |
 
 ## Authentication Flow
 
@@ -30,6 +30,7 @@ Client                        Backend                     Database
 ```
 
 No tokens are issued at registration. The user must login to receive tokens.
+A duplicate email returns `409`; a schema violation returns `400`.
 
 ### 2. Login
 
@@ -49,12 +50,14 @@ Client                        Backend                     Database
   |                              |  generateRefreshToken()   |
   |                              |  saveRefreshToken()       |
   |                              |-------------------------->|
-  |                              |  (store refresh token)    |
+  |                              |  (store sha256 of token)  |
   |  Set-Cookie: refreshToken    |                           |
   |  (httpOnly, sameSite=strict) |                           |
   |  200 { token: <access> }     |                           |
   |<-----------------------------|                           |
 ```
+
+**Failure codes:** invalid email or password → `401`; suspended account → `403`.
 
 **Cookie attributes:**
 - `httpOnly: true` — not accessible via JavaScript
@@ -93,16 +96,18 @@ Client                        Backend                     Database
   |----------------------------->|                           |
   |                              |  1. Read cookie            |
   |                              |  2. jwt.verify(refresh)    |
-  |                              |  3. User.findById()        |
-  |                              |     select("+refreshToken")|
+  |                              |  3. User.findById() select  |
+  |                              |     +refreshTokenHash       |
+  |                              |     +isActive               |
   |                              |-------------------------->|
   |                              |<--------------------------|
-  |                              |  4. Compare stored token   |
-  |                              |     with cookie token      |
-  |                              |  5. Generate NEW access    |
-  |                              |     + NEW refresh token    |
-  |                              |  6. Save new refresh token |
-  |                              |     (old token invalidated)|
+  |                              |  4. Reject if !isActive     |
+  |                              |  5. sha256(cookie token),   |
+  |                              |     timingSafeEqual vs hash |
+  |                              |  6. Generate NEW access     |
+  |                              |     + NEW refresh token     |
+  |                              |  7. Save new token's hash   |
+  |                              |     (old token invalidated) |
   |                              |-------------------------->|
   |  Set-Cookie: refreshToken    |                           |
   |  (new rotated token)         |                           |
@@ -111,6 +116,17 @@ Client                        Backend                     Database
 ```
 
 **Rotation:** Each refresh call issues a new refresh token and invalidates the old one. If a stolen refresh token is used, the legitimate user's next refresh attempt will fail (token mismatch), alerting them to re-authenticate.
+
+**Hashed at rest:** the database never stores the refresh token itself — only
+`refreshTokenHash`, the SHA-256 hex digest of the token (`select: false`). A leaked
+database dump therefore yields no usable session. SHA-256 is sufficient here because a
+7-day JWT is high-entropy; bcrypt exists for low-entropy passwords and would add its
+work factor to every `/refresh` call. The presented token is hashed and compared with
+`crypto.timingSafeEqual`, so the comparison leaks nothing through timing.
+
+**Defense in depth:** `/refresh` is not behind `authMiddleware`, so it re-checks
+`isActive` itself and returns `401 "Account has been suspended"` for a suspended user
+even if a stale hash somehow survived.
 
 ### 5. Logout
 
@@ -124,7 +140,7 @@ Client                        Backend                     Database
   |                              |  2. jwt.verify(refresh)    |
   |                              |  3. User.findById()        |
   |                              |  4. clearRefreshToken()    |
-  |                              |     (set refreshToken=null)|
+  |                              |     (refreshTokenHash=null)|
   |                              |-------------------------->|
   |                              |  5. Clear cookie           |
   |  Set-Cookie: refreshToken=   |                           |
@@ -177,9 +193,24 @@ When an admin suspends a user via `PATCH /api/v1/admin/users/:id/suspend`:
 1. The user's `isActive` field is set to `false`
 2. **Login is blocked** — `User.login()` checks `isActive` and throws `"Account has been suspended"`
 3. **Existing tokens are blocked** — `authMiddleware` checks `isActive` and returns `403 "Account has been suspended"`
-4. The user's refresh token remains in the DB but cannot be used (authMiddleware blocks before refresh endpoint is reached — refresh endpoint doesn't require authMiddleware, but the access token it issues would be useless since authMiddleware blocks suspended users)
+4. **The session is ended** — suspension clears `refreshTokenHash`, so the existing refresh cookie is dead immediately. `/refresh` also refuses suspended users outright, so both the stored-hash path and the `isActive` guard reject it.
 
-> **Note:** Suspended users' refresh tokens are NOT automatically cleared. If reactivated, old refresh tokens remain valid. To fully invalidate sessions, consider clearing the refresh token during suspension (future enhancement).
+Reactivating a user does **not** restore the old session: the hash stays `null` and the
+user must log in again.
+
+## Session Invalidation
+
+The stored `refreshTokenHash` is cleared — ending every existing session — on:
+
+| Event | Where |
+|---|---|
+| Logout | `controllers/authController.js:logout` |
+| Account suspension | `controllers/adminController.js:toggleSuspendUser` |
+| Password change | `controllers/userController.js:changePassword` |
+| Each `/refresh` (replaced, not cleared) | rotation invalidates the previous token |
+
+Only one refresh token is stored per user, so concurrent sessions overwrite each other —
+a second device logging in invalidates the first device's refresh token.
 
 ## Environment Variables
 
@@ -198,3 +229,9 @@ When an admin suspends a user via `PATCH /api/v1/admin/users/:id/suspend`:
 - **jti claim** — Each refresh token includes a unique `jti` (JWT ID) to prevent identical tokens from being issued in the same second
 - **Password hashing** — bcrypt with salt rounds of 10
 - **Password never returned** — `select: false` on the password field ensures it's excluded from all queries unless explicitly selected with `+password`
+- **Refresh tokens hashed at rest** — only `sha256(token)` is persisted, compared in constant time
+- **Session invalidation** — logout, suspension and password change all clear the stored hash
+
+**Known limitation (deliberate, not yet implemented):** there is no `jti` reuse-detection
+blacklist, so a stolen refresh token used *before* the legitimate client's next refresh
+succeeds once. Rotation still surfaces the theft on the next legitimate call.

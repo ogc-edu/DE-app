@@ -189,11 +189,51 @@ Centralized error handler that normalizes different error types into consistent 
 
 | Error Type | Condition | Status | Message Source |
 |---|---|---|---|
+| Typed HTTP error | `typeof err.statusCode === "number"` | `err.statusCode` | `err.message` |
 | CastError | `err.name === "CastError"` | 404 | `"Resource not found with id: <value>"` |
 | Duplicate key | `err.code === 11000` | 400 | `"Duplicate field value entered for field: <field>"` |
 | ValidationError | `err.name === "ValidationError"` | 400 | Joined field-specific messages from `err.errors[key].message` |
-| Generic Error | `err.name === "Error"` | 400 | `err.message` |
-| Other | — | 500 | `"Server Error"` (fallback) |
+| JWT invalid/expired | `err.name === "JsonWebTokenError"` / `"TokenExpiredError"` | 401 | `"Token is not valid or has expired"` |
+| Anything else | — | 500 | `err.message`, else `"Server Error"` |
+
+The typed branch runs **first**, so a domain error carries its own status code
+straight through. Everything untyped falls to `500` — an unexpected `new Error(...)`
+is a server fault, not a client error.
+
+### Typed errors (`utils/errors.js`)
+
+Models and controllers throw these instead of a bare `Error`:
+
+| Class | Status |
+|---|---|
+| `BadRequestError` | 400 |
+| `UnauthorizedError` | 401 |
+| `ForbiddenError` | 403 |
+| `NotFoundError` | 404 |
+| `ConflictError` | 409 |
+
+All extend `HttpError`, which sets `name = "HttpError"` and `statusCode`.
+
+### Status matrix
+
+| Situation | Status |
+|---|---|
+| Login: invalid credentials / unknown email | 401 |
+| Login: suspended account | 403 |
+| Register: email already exists | 409 |
+| Cross-user simulation access (get / results / delete / cancel) | 403 |
+| Simulation not found | 404 |
+| Cancel a simulation in a terminal status | 409 |
+| Profile: email already in use | 409 |
+| Password change: current password wrong | 401 |
+| Admin: cannot suspend an admin | 400 |
+| Zod validation, import parse errors, unsupported content type | 400 |
+| Suspended user hits a protected route | 403 (`authMiddleware`, not this handler) |
+| Unexpected internal failure | 500 |
+
+> Existence is checked **before** ownership, so requesting another user's simulation
+> returns `403` while a wholly unknown id returns `404`. This is a deliberate trade-off:
+> the ids are unguessable ObjectIds, so the distinction leaks nothing practical.
 
 **Logging:** All errors are logged via Winston at the `error` level, including the error name, code, and stack trace location.
 

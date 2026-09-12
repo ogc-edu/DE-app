@@ -12,9 +12,12 @@ Express 5 Backend (Dockerized)
     |  Middleware pipeline: helmet > json > cookies > cors > morgan > routes
     v
 Mongoose Models (User, Simulation)
-    |
-    v
-MongoDB (replica set)
+    |                         \
+    v                          `--> AWS SQS (one job per simulation)
+MongoDB (replica set)                    |
+    ^                                    v
+    `------------------------- EC2 worker (separate repo DE-forEC2)
+                               writes status / progress / simulationData
 ```
 
 ## Project Structure
@@ -33,15 +36,17 @@ DE-website-backend/
 │
 ├── config/
 │   ├── database.js             # MongoDB connection (connectDB, closeDB)
-│   └── logger.js               # Winston logger config (console + file transports)
+│   ├── logger.js               # Winston logger config (console + file transports)
+│   ├── s3.js                   # S3 client + profile-image key helpers (env read at require time)
+│   └── sqs.js                  # SQS client, sendSimulationJob, getQueueStatus (same convention)
 │
 ├── controllers/
 │   ├── authController.js       # verify, refresh, logout handlers
 │   ├── loginController.js      # login handler (sets refresh token cookie)
 │   ├── registerController.js   # register handler
-│   ├── simulationController.js# create, get, delete, cancel, results handlers
+│   ├── simulationController.js# create, import, get, delete, cancel, results handlers
 │   ├── adminController.js      # admin: users, simulations, queue, suspend
-│   ├── userController.js       # profile view/update, password change
+│   ├── userController.js       # profile view/update, password change, avatar presign/confirm
 │   └── healthController.js     # health check with DB status
 │
 ├── middleware/
@@ -64,8 +69,12 @@ DE-website-backend/
 │   └── healthRoutes.js         # (removed — health is inline in index.js)
 │
 ├── validators/
-│   ├── authValidators.js       # Zod schemas: register, login, profile, password
-│   └── simulationValidators.js# Zod schema: create simulation
+│   ├── authValidators.js       # Zod schemas: register, login, profile, password, avatar confirm
+│   └── simulationValidators.js# Zod schemas: create + import simulation
+│
+├── utils/
+│   ├── importParser.js         # Pure parser for the .txt results import format
+│   └── errors.js               # Typed HTTP errors (HttpError + status subclasses)
 │
 ├── docs/
 │   ├── swagger.js              # Swagger/OpenAPI spec generation
@@ -79,11 +88,13 @@ DE-website-backend/
 │   └── testing.md              # Testing guide
 │
 ├── tests/
-│   ├── setup.js                # Test DB setup, beforeEach cleanup, afterAll teardown
-│   ├── auth.test.js            # Auth endpoint tests (18 tests)
-│   ├── simulation.test.js      # Simulation endpoint tests (17 tests)
-│   ├── admin.test.js           # Admin endpoint tests (13 tests)
-│   └── user.test.js            # User profile endpoint tests (10 tests)
+│   ├── setup.js                # Test env + SQS mock, DB setup, afterEach cleanup, teardown
+│   ├── auth.test.js            # Auth endpoint tests (22 tests)
+│   ├── simulation.test.js      # Simulation endpoint tests (24 tests)
+│   ├── admin.test.js           # Admin endpoint tests (19 tests)
+│   ├── user.test.js            # User profile endpoint tests (17 tests)
+│   ├── import.test.js          # Import endpoint tests (6 tests)
+│   └── importParser.test.js    # Parser unit tests (19 tests)
 │
 └── logs/                       # Winston log files (gitignored)
     ├── error.log               # Error-level logs only
@@ -169,11 +180,16 @@ Within `simulationRoutes.js`, the more specific route `/get/:simulationId/result
 
 All controllers wrap their logic in `try/catch` and pass errors to `next(err)`. The centralized `errorHandler` middleware in `middleware/errorHandler.js` handles:
 
+- **Typed `HttpError`** (`utils/errors.js`) → its own `statusCode`, checked **first**
 - **CastError** (Mongoose) → 404
 - **Duplicate key (code 11000)** → 400
 - **ValidationError** (Mongoose) → 400 with field-specific messages
-- **Generic Error** (manual `throw new Error()`) → 400
-- **Unhandled** → 500
+- **JWT invalid/expired** → 401
+- **Anything untyped** → 500 (an unexpected `new Error()` is a server fault, not a client error)
+
+Domain code throws `NotFoundError` / `ForbiddenError` / `ConflictError` / `UnauthorizedError`
+/ `BadRequestError` rather than bare `Error`, so ownership, existence and state-conflict
+failures carry correct codes. The full matrix is in [Middleware](./middleware.md).
 
 ### Logging
 
@@ -190,7 +206,7 @@ Morgan logs HTTP requests in `combined` format, piped through Winston's info lev
 1. **Helmet** — sets HTTP security headers
 2. **CORS** — configurable origin whitelist via `CORS_ORIGIN` env var
 3. **JWT** — signed with `JWT_SECRET`, 1-hour expiry
-4. **Refresh token rotation** — new token on each refresh, old token invalidated
+4. **Refresh token rotation** — new token on each refresh, old token invalidated; only the SHA-256 digest is stored, compared with `crypto.timingSafeEqual`, and cleared on logout, suspension and password change
 5. **httpOnly cookies** — refresh tokens not accessible via JavaScript
 6. **bcrypt** — passwords hashed with salt rounds of 10
 7. **Zod validation** — input sanitized (trim, lowercase) and validated before reaching controllers
@@ -203,7 +219,7 @@ Morgan logs HTTP requests in `combined` format, piped through Winston's info lev
 **Development (`Dockerfile.dev`):** Single stage, installs all deps, runs `npx nodemon -L server.js` for hot reload.
 
 **docker-compose.yml:** Two services:
-- `mongo` — MongoDB Atlas Local 8.0.0 with replica set health check
+- `mongo` — MongoDB Atlas Local 8.0.0 (container `de-db`), creates the `root` user and auto-initiates the replica set via its healthcheck
 - `backend` — built from `Dockerfile.dev`, mounts source for hot reload, depends on `mongo` being healthy
 
 ### Graceful Shutdown
@@ -213,11 +229,10 @@ Morgan logs HTTP requests in `combined` format, piped through Winston's info lev
 ## Out of Scope (per PRD)
 
 - Frontend SPA (separate repo)
-- S3/profile picture upload
 - AWS Secrets Manager (env vars suffice for v1)
 - Email verification flow (`isVerified` field deferred)
-- Worker/EC2-side code (this repo is the backend API only)
+- Worker/EC2-side code (this repo is the backend API only — the worker lives in the separate `DE-forEC2` repo)
 - CI/CD pipeline
 - Rate limiting
 - WebSocket/polling strategy (frontend concern)
-- AWS SQS integration (queue endpoint is a stub)
+- Refresh-token reuse detection (`jti` blacklist)

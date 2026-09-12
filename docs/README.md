@@ -31,12 +31,12 @@ Complete documentation for the Differential Evolution Research Dashboard backend
 | Runtime | Node.js 20 |
 | Framework | Express 5 |
 | Database | MongoDB 7 (via Mongoose 9) |
-| Auth | JWT (jsonwebtoken) + bcrypt |
+| Auth | JWT (jsonwebtoken) + bcrypt; refresh tokens hashed at rest |
 | Validation | Zod 4 |
 | Logging | Winston + Morgan |
 | Security | Helmet, CORS, httpOnly cookies |
 | API Docs | Swagger/OpenAPI 3.0 |
-| Testing | Jest 30 + Supertest 7 |
+| Testing | Jest 30 + Supertest 7 (107 tests, 6 suites) |
 | Containerization | Docker (multi-stage, Node 20 slim) |
 
 ## API Versioning

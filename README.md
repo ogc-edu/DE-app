@@ -11,7 +11,7 @@ npm install
 # Create .env (see docs/setup.md for details)
 cp .env.example .env  # or create manually
 
-# Start development server (requires MongoDB running locally)
+# Start development server (needs a replica-set MongoDB: docker compose up -d mongo)
 npm run dev
 
 # Or start everything with Docker Compose
@@ -27,6 +27,10 @@ Full documentation is available in the [`docs/`](./docs/) directory:
 
 | Document | Description |
 |---|---|
+| [PRD](./docs/PRD.md) | Product requirements, user stories, implementation decisions |
+| [Context](./docs/context.md) | Living codebase context: layout, API surface, conventions, gotchas |
+| [Implementation Plan](./docs/IMPLEMENTATION_PLAN.md) | Master plan for the 001-004 work and the decisions log |
+| [Feature Plans](./docs/plans/) | Per-feature plans (001 repo health, 002 refresh tokens, 003 error semantics, 004 docs) |
 | [Setup Guide](./docs/setup.md) | Installation, environment variables, Docker |
 | [Architecture](./docs/architecture.md) | Project structure, design decisions, request lifecycle |
 | [Authentication](./docs/authentication.md) | JWT auth flow, refresh token rotation, RBAC |
@@ -42,12 +46,12 @@ Full documentation is available in the [`docs/`](./docs/) directory:
 | Runtime | Node.js 20 |
 | Framework | Express 5 |
 | Database | MongoDB 7 (via Mongoose 9) |
-| Auth | JWT + bcrypt + refresh token rotation |
+| Auth | JWT + bcrypt + refresh token rotation (hashed at rest) |
 | Validation | Zod 4 |
 | Logging | Winston + Morgan |
 | Security | Helmet, CORS, httpOnly cookies |
 | API Docs | Swagger/OpenAPI 3.0 |
-| Testing | Jest 30 + Supertest 7 (58 tests) |
+| Testing | Jest 30 + Supertest 7 (107 tests, 6 suites) |
 | Containerization | Docker (multi-stage, Node 20 slim) |
 
 ## API Overview
@@ -58,7 +62,7 @@ All routes are versioned under `/api/v1`.
 |---|---|---|
 | `/api/v1/register`, `/login`, `/verify`, `/refresh`, `/logout` | — | Authentication |
 | `/api/v1/user/profile`, `/user/password` | Bearer token | User profile management |
-| `/api/v1/simulation/*` | Bearer token | Simulation CRUD + results |
+| `/api/v1/simulation/*` | Bearer token | Simulation CRUD, results, and `.txt` data import |
 | `/api/v1/admin/*` | Bearer token + Admin | Admin oversight |
 | `/api/v1/health` | — | Health check |
 | `/api/v1/docs` | — | Swagger UI |
@@ -81,12 +85,13 @@ npm run test:coverage  # Run tests with coverage report
 ```
 ├── app.js              # Express app (middleware, routes)
 ├── server.js           # Server entry point
-├── config/             # Database + logger config
+├── config/             # Database, logger, S3 and SQS clients
 ├── controllers/        # Route handlers (auth, simulation, admin, user)
 ├── middleware/         # auth, admin, validation, error handling
 ├── models/             # Mongoose schemas (User, Simulation)
 ├── routes/             # Express routers (auth, simulation, admin, user)
 ├── validators/         # Zod validation schemas
+├── utils/              # importParser (.txt import format) + typed HTTP errors
 ├── docs/               # Documentation + Swagger config
 ├── tests/              # Jest + Supertest test suites
 ├── Dockerfile          # Production image

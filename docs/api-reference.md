@@ -80,7 +80,8 @@ Register a new user account. New users are assigned `role: "user"` by default.
 | Status | Description |
 |---|---|
 | 201 | User registered successfully |
-| 400 | Validation error or duplicate email |
+| 400 | Validation error |
+| 409 | Email already registered |
 
 **Example success response:**
 ```json
@@ -114,7 +115,9 @@ Authenticate a user and receive an access token. Sets an httpOnly refresh token 
 | Status | Description |
 |---|---|
 | 200 | Login successful, returns access token |
-| 400 | Invalid credentials or account suspended |
+| 400 | Validation error |
+| 401 | Invalid email or password |
+| 403 | Account has been suspended |
 
 **Example success response:**
 ```json
@@ -176,6 +179,10 @@ Exchange a valid refresh token cookie for a new access token. The refresh token 
 
 **Rotation behavior:** Each call to `/refresh` issues a new refresh token and invalidates the old one. The old token will no longer be accepted on subsequent calls.
 
+**Storage:** the database holds only the SHA-256 digest of the current refresh token, so
+a `401` is returned whenever the presented cookie's digest does not match. Suspended
+users are rejected with `401` even if a digest still matches.
+
 ---
 
 ### POST /api/v1/logout
@@ -231,7 +238,68 @@ Get the current authenticated user's profile.
 }
 ```
 
-> **Note:** `password` and `refreshToken` fields are never included in the response.
+> **Note:** the `password` and `refreshTokenHash` fields are never included in the response.
+
+---
+
+### GET /api/v1/user/profile/presign
+
+Request a presigned S3 URL for uploading a profile picture. The client then `PUT`s the
+file straight to S3 and confirms with the endpoint below.
+
+**Auth required:** Bearer token
+
+**Query parameters:**
+| Parameter | Required | Description |
+|---|---|---|
+| `contentType` | yes | One of `image/jpeg`, `image/png`, `image/webp`, `image/gif` |
+
+**Responses:**
+| Status | Description |
+|---|---|
+| 200 | Presigned upload URL returned |
+| 400 | Unsupported content type |
+| 401 | Unauthorized |
+
+**Example response:**
+```json
+{
+  "uploadUrl": "https://bucket.s3.amazonaws.com/profile-images/68a1...?X-Amz-Signature=...",
+  "key": "profile-images/68a1f2c3d4e5f6a7b8c9d0e1",
+  "contentType": "image/jpeg",
+  "expiresIn": 300
+}
+```
+
+The key is fixed per user, so each upload overwrites the same object and bucket
+versioning produces a new version id. The URL expires after 5 minutes.
+
+---
+
+### POST /api/v1/user/profile/picture
+
+Confirm a completed S3 upload and store the public object URL on the user.
+
+**Auth required:** Bearer token
+
+**Request body:**
+```json
+{
+  "versionId": "3HL4kqtJlcpXroDTDmJ+rmSpXd3dIbrHY"
+}
+```
+
+| Field | Rule |
+|---|---|
+| `versionId` | Optional; if present, 1–64 characters. Appended as a cache-buster |
+
+**Responses:**
+| Status | Description |
+|---|---|
+| 200 | Profile picture updated, returns the updated user |
+| 400 | Validation error (empty `versionId`) |
+| 401 | Unauthorized |
+| 404 | User not found |
 
 ---
 
@@ -259,7 +327,8 @@ Update the current user's username and/or email.
 | Status | Description |
 |---|---|
 | 200 | Profile updated successfully |
-| 400 | Email already in use |
+| 400 | Validation error |
+| 409 | Email already in use |
 | 404 | User not found |
 
 ---
@@ -288,9 +357,13 @@ Change the current user's password. Requires the current password for verificati
 | Status | Description |
 |---|---|
 | 200 | Password changed successfully |
-| 400 | Current password incorrect or new password too long |
+| 400 | New password fails validation (max 12 characters) |
+| 401 | Current password incorrect |
+| 404 | User not found |
 
 > The new password is automatically hashed by the Mongoose `pre('save')` hook before storage.
+> A successful change also clears the stored refresh-token hash, so every existing
+> session ends and the user must log in again.
 
 ---
 
@@ -355,6 +428,64 @@ Example: 3 functions × 2 mutation × 2 crossover × 2 selection = 24 models
 
 ---
 
+### POST /api/v1/simulation/import
+
+Import a `.txt` results file as an already-completed simulation. No SQS job is
+enqueued — imported data is final.
+
+**Auth required:** Bearer token
+
+**Request body:**
+```json
+{
+  "content": "# np=15\nmodel\tbenchmark\tlowestFitness\n1/1/1\t1\t0.0001",
+  "filename": "results.txt"
+}
+```
+
+**Validation rules:**
+| Field | Rule |
+|---|---|
+| `content` | Required, non-empty string (the whole file) |
+| `filename` | Optional, at most 255 characters |
+
+The file format contract lives in `import-format.md` at the monorepo root: an optional
+`# key=value` metadata block (`np`, `f`, `cr`, `gen`, `dim`), a required
+`model<TAB>benchmark<TAB>lowestFitness` header, then one row per (model × benchmark).
+Model strings are `<mutation>/<crossover>/<selection>`.
+
+**Responses:**
+| Status | Description |
+|---|---|
+| 201 | Data imported successfully |
+| 400 | Zod validation error, or parse failure with line-numbered `errors[]` |
+| 401 | Unauthorized |
+
+**Example success response:**
+```json
+{
+  "message": "Data imported successfully",
+  "simulationId": "68a1f2c3d4e5f6a7b8c9d0e1",
+  "totalModels": 40
+}
+```
+
+**Example parse-failure response (400):**
+```json
+{
+  "success": false,
+  "message": "Import failed",
+  "errors": [
+    { "line": 4, "message": "benchmark must be an integer between 1 and 10" }
+  ]
+}
+```
+
+The imported simulation is stored with `status: "completed"`, `progress: 100`, and
+`completedModels === totalModels`.
+
+---
+
 ### GET /api/v1/simulation/get
 
 List all simulations belonging to the authenticated user. Supports pagination and status filtering.
@@ -409,8 +540,9 @@ Get a single simulation by its ID.
 | Status | Description |
 |---|---|
 | 200 | Simulation details |
-| 400 | Simulation not found or unauthorized access |
 | 401 | Unauthorized (no/invalid token) |
+| 403 | Simulation belongs to another user |
+| 404 | Simulation not found |
 
 ---
 
@@ -429,7 +561,9 @@ Get only the results data for a simulation — a lighter payload focused on the 
 | Status | Description |
 |---|---|
 | 200 | Results data returned |
-| 400 | Simulation not found or unauthorized access |
+| 401 | Unauthorized (no/invalid token) |
+| 403 | Simulation belongs to another user |
+| 404 | Simulation not found |
 
 **Example response:**
 ```json
@@ -477,7 +611,9 @@ Delete a simulation. Only the simulation owner can delete it.
 | Status | Description |
 |---|---|
 | 200 | Simulation deleted successfully |
-| 400 | Not found or unauthorized |
+| 401 | Unauthorized (no/invalid token) |
+| 403 | Simulation belongs to another user |
+| 404 | Simulation not found |
 
 ---
 
@@ -496,7 +632,10 @@ Cancel a pending simulation. Sets status to `cancelled`. Only the simulation own
 | Status | Description |
 |---|---|
 | 200 | Simulation cancelled successfully |
-| 400 | Not found or unauthorized |
+| 401 | Unauthorized (no/invalid token) |
+| 403 | Simulation belongs to another user |
+| 404 | Simulation not found |
+| 409 | Simulation is already in a terminal status (`completed`, `failed`, `cancelled`) |
 
 ---
 
@@ -542,7 +681,7 @@ List all users with pagination.
 }
 ```
 
-> `refreshToken` is never included in the response.
+> `refreshTokenHash` is never included in the response.
 
 ---
 
@@ -666,7 +805,12 @@ Get real SQS queue metrics for the simulation job queue.
     "oldestMessageAge": 42
   }
 }
-```ration not configured",
+```
+
+**Example 503 response:**
+```json
+{
+  "message": "SQS queue not configured (SQS_QUEUE_URL missing)",
   "queue": null
 }
 ```
@@ -711,8 +855,13 @@ Check the server and database status. No authentication required.
 |---|---|---|
 | 200 | OK | Successful GET, PATCH, POST (logout, refresh) |
 | 201 | Created | Successful register, simulation create |
-| 400 | Bad Request | Validation error, duplicate, invalid credentials, unauthorized resource access |
-| 401 | Unauthorized | Missing or invalid JWT token, missing/invalid refresh token |
-| 403 | Forbidden | Suspended user, admin access required |
+| 400 | Bad Request | Zod validation, import parse errors, unsupported upload type, suspending an admin |
+| 401 | Unauthorized | Missing/invalid JWT or refresh token, wrong login or current password |
+| 403 | Forbidden | Suspended user, admin access required, another user's resource |
 | 404 | Not Found | User or simulation not found |
+| 409 | Conflict | Email already registered or in use, cancelling a terminal simulation |
+| 503 | Service Unavailable | `GET /admin/queue` with no `SQS_QUEUE_URL` configured |
 | 500 | Internal Server Error | Unhandled server errors |
+
+Ownership is checked **after** existence, so another user's simulation id yields `403`
+while an unknown id yields `404`.
