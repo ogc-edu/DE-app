@@ -108,7 +108,7 @@ docker-compose up --build   # mongo (atlas-local, replica set "replicaset") + ba
 ./start-dev.bat        # Windows: starts de-db container + npm run dev
 ```
 
-**MongoDB for tests/dev**: both `docker-compose.yml` and `tests/setup.js` require a **replica set** named `replicaset`. `notes.txt` has the standalone command: `docker run -d --name atlas-mongo -p 27017:27017 -v atlas_mongo_data:/data/db -e MONGODB_INITDB_ROOT_USERNAME=root -e MONGODB_INITDB_ROOT_PASSWORD=password123 mongodb/mongodb-atlas-local:8.0.0-...`. Plain local `mongod` without a replica set will fail the test connection.
+**MongoDB for tests/dev**: both `docker-compose.yml` and `tests/setup.js` require a **replica set** named `replicaset`. The canonical way to start it is `docker compose up -d mongo` (container `de-db`); `notes.txt` records the standalone `docker run` fallback under the same name. Plain local `mongod` without a replica set will fail the test connection.
 
 ## Progress check (as of now)
 
@@ -118,7 +118,7 @@ docker-compose up --build   # mongo (atlas-local, replica set "replicaset") + ba
 - Simulation: create (Cartesian `totalModels`), list (pagination + status filter), single, results, delete, cancel — all ownership-checked.
 - Admin: users list/get/suspend, simulations list/delete, **real queue metrics** (GetQueueAttributes).
 - Validation (Zod), structured error handling, winston logging, Swagger docs.
-- Docker multi-stage + compose; docs/ suite; 6 Jest/Supertest suites — **99/99 passing** (verified this session against the `atlas-mongo` container). **Docker image build + container smoke test verified** (health 200, login works, real SQS metrics via `GET /admin/queue`).
+- Docker multi-stage + compose; docs/ suite; 6 Jest/Supertest suites — **99/99 passing** (verified this session against the `de-db` container). **Docker image build + container smoke test verified** (health 200, login works, real SQS metrics via `GET /admin/queue`).
 - `.env.example` committed (Task 1); local `.env` created (gitignored).
 - Quick-win bug fixes: `/verify` invalid/expired token → 401 (was 500); removed dead `User.modifyEmail`; fixed `password` schema `require:`→`required:` typo.
 
@@ -154,7 +154,7 @@ docker-compose up --build   # mongo (atlas-local, replica set "replicaset") + ba
 
 ## Local dev/test environment (verified working)
 
-- MongoDB: `atlas-mongo` docker container (root:password123, auth enforced, RS name = container hostname). Connection string used in `.env`/`.env.example`/`tests/setup.js`: `mongodb://root:password123@localhost:27017/<db>?directConnection=true&authSource=admin` — no `replicaSet` param (name is hostname, changes per recreate; app/tests don't use transactions).
+- MongoDB: `de-db` docker container (root:password123, auth enforced, RS name = container hostname). Connection string used in `.env`/`.env.example`/`tests/setup.js`: `mongodb://root:password123@localhost:27017/<db>?directConnection=true&authSource=admin` — no `replicaSet` param (name is hostname, changes per recreate; app/tests don't use transactions).
 - `npm test` (**99/99**, re-verified this session) and `npm run dev` both work against it. Node v26.5.1 / npm 11.17.0 available on the dev machine.
 
 ## Conventions

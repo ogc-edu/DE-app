@@ -6,6 +6,10 @@ Complete documentation for the Differential Evolution Research Dashboard backend
 
 | Document | Description |
 |---|---|
+| [PRD](./PRD.md) | Product requirements, user stories, implementation & testing decisions (backlog source of truth) |
+| [Context](./context.md) | Living codebase context: layout, API surface, auth flow, conventions, gotchas |
+| [Implementation Plan](./IMPLEMENTATION_PLAN.md) | Approved master plan for remaining work (001–004) and decisions log |
+| [Feature Plans](./plans/) | Per-feature implementation plans: `001-repo-health-baseline.md`, `002-refresh-token-hardening.md`, `003-api-error-semantics-fix.md`, `004-documentation-baseline-refresh.md` |
 | [Setup Guide](./setup.md) | Installation, environment variables, Docker, running the server |
 | [Architecture](./architecture.md) | Project structure, design decisions, request lifecycle |
 | [Authentication](./authentication.md) | JWT auth flow, refresh token rotation, role-based access |
