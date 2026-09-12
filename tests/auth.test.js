@@ -1,4 +1,5 @@
 const request = require("supertest");
+const crypto = require("node:crypto");
 const app = require("../app");
 const User = require("../models/user");
 
@@ -174,6 +175,66 @@ describe("Auth Endpoints", () => {
       expect(newRefreshToken).not.toBe(refreshToken);
     });
 
+    it("should store only a sha256 hash of the refresh token, never the raw token", async () => {
+      const user = await User.findOne({ email: testUser.email }).select("+refreshTokenHash");
+
+      expect(user.refreshTokenHash).toHaveLength(64);
+      expect(user.refreshTokenHash).not.toBe(refreshToken);
+      expect(user.refreshTokenHash).toBe(
+        crypto.createHash("sha256").update(refreshToken).digest("hex")
+      );
+    });
+
+    it("should reject the old refresh token after rotation", async () => {
+      await request(app)
+        .post("/api/v1/refresh")
+        .set("Cookie", `refreshToken=${refreshToken}`);
+
+      const res = await request(app)
+        .post("/api/v1/refresh")
+        .set("Cookie", `refreshToken=${refreshToken}`);
+
+      expect(res.statusCode).toBe(401);
+    });
+
+    it("should reject a refresh after the user is suspended", async () => {
+      const admin = await User.create({
+        username: "suspendadmin",
+        email: "suspendadmin@example.com",
+        password: "password123",
+        role: "admin",
+      });
+      const user = await User.findOne({ email: testUser.email });
+
+      const suspendRes = await request(app)
+        .patch(`/api/v1/admin/users/${user._id.toString()}/suspend`)
+        .set("Authorization", `Bearer ${admin.generateJwtToken()}`);
+      expect(suspendRes.statusCode).toBe(200);
+
+      const res = await request(app)
+        .post("/api/v1/refresh")
+        .set("Cookie", `refreshToken=${refreshToken}`);
+
+      expect(res.statusCode).toBe(401);
+    });
+
+    it("should reject a refresh for an inactive user even when the stored hash still matches", async () => {
+      // Suspend directly so the hash is left intact -- exercises the
+      // isActive guard rather than the cleared-hash path.
+      const user = await User.findOne({ email: testUser.email });
+      await User.findByIdAndUpdate(user._id, { isActive: false });
+
+      const stillStored = await User.findById(user._id).select("+refreshTokenHash");
+      expect(stillStored.refreshTokenHash).not.toBeNull();
+
+      const res = await request(app)
+        .post("/api/v1/refresh")
+        .set("Cookie", `refreshToken=${refreshToken}`);
+
+      expect(res.statusCode).toBe(401);
+      expect(res.body.message).toContain("suspended");
+    });
+
     it("should reject an invalid refresh token", async () => {
       const res = await request(app)
         .post("/api/v1/refresh")
@@ -218,8 +279,8 @@ describe("Auth Endpoints", () => {
         .post("/api/v1/logout")
         .set("Cookie", `refreshToken=${refreshToken}`);
 
-      const user = await User.findOne({ email: testUser.email }).select("+refreshToken");
-      expect(user.refreshToken).toBeNull();
+      const user = await User.findOne({ email: testUser.email }).select("+refreshTokenHash");
+      expect(user.refreshTokenHash).toBeNull();
     });
   });
 });

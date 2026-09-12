@@ -1,7 +1,14 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const crypto = require("node:crypto");
 require("dotenv").config();
+
+// Refresh tokens are high-entropy 7-day JWTs, so a plain SHA-256 digest is
+// adequate at rest -- bcrypt is for low-entropy passwords and would add its
+// work factor to every /refresh call.
+const hashRefreshToken = (token) =>
+  crypto.createHash("sha256").update(token).digest("hex");
 
 
 const userSchema = new mongoose.Schema({
@@ -44,7 +51,8 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: true,
   },
-  refreshToken: {
+  // Stores sha256(rawRefreshToken) as hex -- never the token itself.
+  refreshTokenHash: {
     type: String,
     select: false,
     default: null,
@@ -109,14 +117,18 @@ userSchema.methods.generateRefreshToken = function () {
 };
 
 userSchema.methods.saveRefreshToken = async function (token) {
-  this.refreshToken = token;
+  this.refreshTokenHash = hashRefreshToken(token);
   return await this.save();
 };
 
 userSchema.methods.clearRefreshToken = async function () {
-  this.refreshToken = null;
+  this.refreshTokenHash = null;
   return await this.save();
 };
+
+// Exported so the refresh controller can hash the presented token and compare
+// it in constant time.
+userSchema.statics.hashRefreshToken = hashRefreshToken;
 
 //middleware before saving new user,
 //used async because bcrypt is time-consuming

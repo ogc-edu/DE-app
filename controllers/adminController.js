@@ -9,7 +9,7 @@ const getAllUsers = async (req, res, next) => {
     const skip = (page - 1) * limit;
 
     const users = await User.find()
-      .select("-refreshToken")
+      .select("-refreshTokenHash")
       .skip(skip)
       .limit(limit)
       .sort({ createdAt: -1 });
@@ -28,7 +28,7 @@ const getAllUsers = async (req, res, next) => {
 
 const getUserById = async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id).select("-refreshToken -password");
+    const user = await User.findById(req.params.id).select("-refreshTokenHash -password");
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -49,6 +49,10 @@ const toggleSuspendUser = async (req, res, next) => {
       return res.status(400).json({ message: "Cannot suspend an admin user" });
     }
 
+    // Suspending ends existing sessions; reactivation requires a fresh login.
+    if (user.isActive) {
+      user.refreshTokenHash = null;
+    }
     user.isActive = !user.isActive;
     await user.save();
 

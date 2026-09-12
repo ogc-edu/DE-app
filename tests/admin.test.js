@@ -84,6 +84,7 @@ describe("Admin Endpoints", () => {
 
       res.body.users.forEach((u) => {
         expect(u).not.toHaveProperty("refreshToken");
+        expect(u).not.toHaveProperty("refreshTokenHash");
       });
     });
   });
@@ -117,6 +118,22 @@ describe("Admin Endpoints", () => {
       expect(res.statusCode).toBe(200);
       expect(res.body).toHaveProperty("isActive", false);
       expect(res.body.message).toContain("suspended");
+    });
+
+    it("should clear the suspended user's stored refresh-token hash", async () => {
+      await request(app)
+        .post("/api/v1/login")
+        .send({ email: regularUser.email, password: regularUser.password });
+
+      const before = await User.findById(userId).select("+refreshTokenHash");
+      expect(before.refreshTokenHash).not.toBeNull();
+
+      await request(app)
+        .patch(`/api/v1/admin/users/${userId}/suspend`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      const after = await User.findById(userId).select("+refreshTokenHash");
+      expect(after.refreshTokenHash).toBeNull();
     });
 
     it("should reactivate a suspended user", async () => {

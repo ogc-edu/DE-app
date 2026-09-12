@@ -12,7 +12,7 @@ const PRESIGN_URL_EXPIRES_IN_SECONDS = 300; // 5 minutes
 
 const getProfile = async (req, res, next) => {
   try {
-    const user = await User.findById(req.userId).select("-refreshToken -password");
+    const user = await User.findById(req.userId).select("-refreshTokenHash -password");
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -41,7 +41,7 @@ const updateProfile = async (req, res, next) => {
     if (affiliation !== undefined) user.affiliation = affiliation;
 
     await user.save();
-    const updated = await User.findById(req.userId).select("-refreshToken -password");
+    const updated = await User.findById(req.userId).select("-refreshTokenHash -password");
     res.status(200).json({ message: "Profile updated successfully", user: updated });
   } catch (err) {
     next(err);
@@ -91,7 +91,7 @@ const confirmProfilePicture = async (req, res, next) => {
     user.profilePicture = buildPublicObjectUrl(key, versionId);
     await user.save();
 
-    const updated = await User.findById(req.userId).select("-refreshToken -password");
+    const updated = await User.findById(req.userId).select("-refreshTokenHash -password");
     res.status(200).json({ message: "Profile picture updated successfully", user: updated });
   } catch (err) {
     next(err);
@@ -116,6 +116,8 @@ const changePassword = async (req, res, next) => {
     }
 
     user.password = newPassword;
+    // End all existing sessions; the user must log in again.
+    user.refreshTokenHash = null;
     await user.save();
 
     res.status(200).json({ message: "Password changed successfully" });

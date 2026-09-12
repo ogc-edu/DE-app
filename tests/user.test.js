@@ -34,6 +34,7 @@ describe("User Profile Endpoints", () => {
       expect(res.body.user).toHaveProperty("email", testUser.email);
       expect(res.body.user).not.toHaveProperty("password");
       expect(res.body.user).not.toHaveProperty("refreshToken");
+      expect(res.body.user).not.toHaveProperty("refreshTokenHash");
     });
 
     it("should return 401 without a token", async () => {
@@ -119,6 +120,29 @@ describe("User Profile Endpoints", () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.body).toHaveProperty("token");
+    });
+
+    it("should invalidate existing sessions after a password change", async () => {
+      const loginRes = await request(app)
+        .post("/api/v1/login")
+        .send({ email: testUser.email, password: testUser.password });
+      const cookies = loginRes.headers["set-cookie"];
+      const cookieStr = Array.isArray(cookies) ? cookies.join(";") : cookies;
+      const refreshToken = cookieStr.match(/refreshToken=([^;]+)/)[1];
+
+      await request(app)
+        .patch("/api/v1/user/password")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ currentPassword: testUser.password, newPassword: "newpass123" });
+
+      const res = await request(app)
+        .post("/api/v1/refresh")
+        .set("Cookie", `refreshToken=${refreshToken}`);
+
+      expect(res.statusCode).toBe(401);
+
+      const user = await User.findById(userId).select("+refreshTokenHash");
+      expect(user.refreshTokenHash).toBeNull();
     });
 
     it("should reject new password exceeding 12 characters (Zod validation)", async () => {

@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const crypto = require("node:crypto");
 const User = require("../models/user");
 
 const verify = async (req, res, next) => {
@@ -41,11 +42,25 @@ const refresh = async (req, res, next) => {
       return res.status(401).json({ message: "Invalid or expired refresh token" });
     }
 
-    const user = await User.findById(decoded.userId).select("+refreshToken");
+    const user = await User.findById(decoded.userId).select("+refreshTokenHash +isActive");
     if (!user) {
       return res.status(401).json({ message: "User not found" });
     }
-    if (user.refreshToken !== refreshToken) {
+    // Defense-in-depth: a suspended user must not refresh even if a stale hash
+    // somehow survived.
+    if (!user.isActive) {
+      return res.status(401).json({ message: "Account has been suspended" });
+    }
+
+    // Compare digests in constant time. Hashing the presented token normalizes
+    // any input to 64 hex chars; the length guard covers a malformed stored value.
+    const presented = Buffer.from(User.hashRefreshToken(refreshToken), "hex");
+    const stored = Buffer.from(user.refreshTokenHash || "", "hex");
+    if (
+      user.refreshTokenHash == null ||
+      presented.length !== stored.length ||
+      !crypto.timingSafeEqual(presented, stored)
+    ) {
       return res.status(401).json({ message: "Refresh token does not match" });
     }
 
@@ -81,7 +96,7 @@ const logout = async (req, res, next) => {
       return res.status(200).json({ message: "Logged out successfully" });
     }
 
-    const user = await User.findById(decoded.userId).select("+refreshToken");
+    const user = await User.findById(decoded.userId).select("+refreshTokenHash");
     if (user) {
       await user.clearRefreshToken();
     }
