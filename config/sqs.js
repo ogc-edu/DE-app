@@ -16,7 +16,7 @@ const sqsClient = new SQSClient({ region: AWS_REGION });
 // expects. `de.exe` parses the array fields as comma-separated values, so we
 // send them as comma-joined strings (spawner.js also handles plain arrays).
 const buildSimulationJob = (simulation) => ({
-  simulationId: simulation._id.toString(),
+  simulationId: String(simulation.simulationId ?? simulation._id),
   bf: simulation.functions.join(","),
   mutation: simulation.methods.mutation.join(","),
   crossover: simulation.methods.crossover.join(","),

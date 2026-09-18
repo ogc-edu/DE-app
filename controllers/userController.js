@@ -3,7 +3,7 @@ const bcrypt = require("bcrypt");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const { PutObjectCommand } = require("@aws-sdk/client-s3");
 const { s3Client, profileImageKey, buildPublicObjectUrl } = require("../config/s3");
-const { UnauthorizedError, ConflictError } = require("../utils/errors");
+const { UnauthorizedError } = require("../utils/errors");
 
 // Content types allowed for profile pictures (frontend enforces the 5 MB cap;
 // a fixed per-user key means every upload overwrites the same object so bucket
@@ -13,11 +13,11 @@ const PRESIGN_URL_EXPIRES_IN_SECONDS = 300; // 5 minutes
 
 const getProfile = async (req, res, next) => {
   try {
-    const user = await User.findById(req.userId).select("-refreshTokenHash -password");
+    const user = await User.findById(req.userId);
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
-    res.status(200).json({ user });
+    res.status(200).json({ user: User.toSafeUser(user) });
   } catch (err) {
     next(err);
   }
@@ -26,23 +26,10 @@ const getProfile = async (req, res, next) => {
 const updateProfile = async (req, res, next) => {
   try {
     const { username, email, affiliation } = req.body;
-    const user = await User.findById(req.userId);
-    if (!user) {
+    const updated = await User.updateProfile(req.userId, { username, email, affiliation });
+    if (!updated) {
       return res.status(404).json({ message: "User not found" });
     }
-
-    if (username) user.username = username;
-    if (email) {
-      const existing = await User.findOne({ email, _id: { $ne: req.userId } });
-      if (existing) {
-        throw new ConflictError("Email already in use");
-      }
-      user.email = email;
-    }
-    if (affiliation !== undefined) user.affiliation = affiliation;
-
-    await user.save();
-    const updated = await User.findById(req.userId).select("-refreshTokenHash -password");
     res.status(200).json({ message: "Profile updated successfully", user: updated });
   } catch (err) {
     next(err);
@@ -82,17 +69,16 @@ const getPresignedUrl = async (req, res, next) => {
 const confirmProfilePicture = async (req, res, next) => {
   try {
     const { versionId } = req.body;
-    const user = await User.findById(req.userId);
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
 
     // Called only after the client successfully PUT the file to S3.
     const key = profileImageKey(req.userId);
-    user.profilePicture = buildPublicObjectUrl(key, versionId);
-    await user.save();
+    const updated = await User.updateProfile(req.userId, {
+      profilePicture: buildPublicObjectUrl(key, versionId),
+    });
+    if (!updated) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
-    const updated = await User.findById(req.userId).select("-refreshTokenHash -password");
     res.status(200).json({ message: "Profile picture updated successfully", user: updated });
   } catch (err) {
     next(err);
@@ -102,24 +88,19 @@ const confirmProfilePicture = async (req, res, next) => {
 const changePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    const user = await User.findById(req.userId).select("+password");
+    const user = await User.findById(req.userId);
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    const isMatch = await bcrypt.compare(currentPassword, user.passwordHash);
     if (!isMatch) {
       throw new UnauthorizedError("Current password is incorrect");
     }
 
-    if (newPassword.length > 12) {
-      return res.status(400).json({ message: "Password cannot exceed 12 characters" });
-    }
-
-    user.password = newPassword;
-    // End all existing sessions; the user must log in again.
-    user.refreshTokenHash = null;
-    await user.save();
+    // changePassword enforces the 12-char max (BadRequestError -> 400) and
+    // clears refreshTokenHash to end all existing sessions.
+    await User.changePassword(req.userId, newPassword);
 
     res.status(200).json({ message: "Password changed successfully" });
   } catch (err) {

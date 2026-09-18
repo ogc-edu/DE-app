@@ -1,22 +1,17 @@
-version: "3.9"
 services:
-  mongo:
-    image: mongodb/mongodb-atlas-local:8.0.0
-    container_name: de-db
-    environment:
-      # Tests, .env and .env.example all authenticate as root:password123
-      # (authSource=admin), so the container must actually create that user.
-      MONGODB_INITDB_ROOT_USERNAME: root
-      MONGODB_INITDB_ROOT_PASSWORD: password123
+  # DynamoDB Local — used for local dev AND tests. Production talks to the real
+  # regional DynamoDB endpoint (DYNAMODB_ENDPOINT unset), same code path.
+  dynamodb:
+    # Pinned to a release tag (latest == 3.3.1); multi-arch (amd64 + arm64).
+    image: amazon/dynamodb-local:3.3.1
+    container_name: de-dynamodb
+    # -sharedDb keeps a single database file so every client (host backend,
+    # tests, aws CLI, containers) sees the same tables.
+    command: "-jar DynamoDBLocal.jar -sharedDb -dbPath /home/dynamodblocal/data"
     ports:
-      - "27017:27017"
+      - "8000:8000"
     volumes:
-      - mongo-data:/data/db
-    healthcheck:
-      test: ["CMD-SHELL", "mongosh 'mongodb://root:password123@localhost:27017/?directConnection=true&authSource=admin' --quiet --eval 'try { rs.status() } catch(e) { rs.initiate({ _id: \"replicaset\", members: [{ _id: 0, host: \"localhost:27017\" }] }) }'"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
+      - ./docker/dynamodb:/home/dynamodblocal/data
 
   backend:
     build:
@@ -27,13 +22,20 @@ services:
       - "3000:3000"
     env_file: .env
     environment:
-      MONGODB_URI: mongodb://root:password123@mongo:27017/Dashboard-Database?directConnection=true&authSource=admin
+      # Talk to the sibling DynamoDB Local container, not localhost.
+      DYNAMODB_ENDPOINT: http://dynamodb:8000
+      AWS_REGION: ap-southeast-1
+      USERS_TABLE: de-users
+      SIMULATIONS_TABLE: de-simulations
+      RESULTS_TABLE: de-simulation-results
+      UNIQUENESS_TABLE: de-uniqueness
+      # DynamoDB Local does not validate signatures, but the AWS SDK still
+      # needs *some* credentials or it throws
+      # "Could not load credentials from any providers".
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
     volumes:
       - .:/app
       - /app/node_modules
     depends_on:
-      mongo:
-        condition: service_healthy
-
-volumes:
-  mongo-data:
+      - dynamodb

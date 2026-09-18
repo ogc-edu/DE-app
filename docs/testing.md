@@ -2,35 +2,45 @@
 
 ## Overview
 
-The test suite uses **Jest 30** as the test runner and **Supertest 7** for HTTP assertions. Tests run against a local MongoDB instance using a separate test database.
+The test suite uses **Jest 30** as the test runner and **Supertest 7** for HTTP assertions. Tests run against **DynamoDB Local** (`http://localhost:8000`) using **dedicated `-test` tables**, so they never touch local-dev data. Jest runs **serially** (`--runInBand`) because every suite shares one local endpoint and would otherwise race while wiping each other's data.
 
 ## Test Files
 
 | File | Tests | Coverage |
 |---|---|---|
 | `tests/auth.test.js` | 22 | Register, login, verify, refresh (rotation, hash-at-rest, suspension), logout |
-| `tests/simulation.test.js` | 24 | Create (incl. SQS contract + DE params), get (paginated/filtered), results, delete, cancel, authorization |
+| `tests/simulation.test.js` | 25 | Create (incl. SQS contract + DE params), get (cursor-paginated/filtered), results, delete (with cascade), cancel, authorization |
 | `tests/admin.test.js` | 19 | Role-based access, user listing, user detail, suspend (incl. session clearing), simulations, queue metrics |
 | `tests/user.test.js` | 17 | Profile view/update, password change (incl. session invalidation), presigned upload, profile picture |
 | `tests/importParser.test.js` | 19 | Pure parser for the `.txt` import format (unit tests, no DB) |
 | `tests/import.test.js` | 6 | `POST /simulation/import` endpoint behavior |
-| **Total** | **107** | |
+| **Total** | **108** | |
 
 ## Running Tests
 
 ### Prerequisites
 
-- A **replica-set** MongoDB must be running locally — a plain `mongod` will not do.
-  The canonical way to start it is `docker compose up -d mongo` (container `de-db`,
-  port 27017); see the [Setup Guide](./setup.md).
-- The test suite connects to `Dashboard-Test-Database` (separate from the dev database).
-- Tests never reach AWS: `tests/setup.js` mocks `@aws-sdk/client-sqs`, and the suites
-  that touch S3 mock `@aws-sdk/s3-request-presigner`.
+- **DynamoDB Local** must be running on port 8000 — `docker compose up -d dynamodb`
+  (container `de-dynamodb`) or `docker run -d -p 8000:8000 amazon/dynamodb-local`.
+- Create the `-test` tables once (idempotent): `npm run db:create:test`. This **refuses to run
+  unless `DYNAMODB_ENDPOINT` is set to a local endpoint** — `-test` tables are DynamoDB Local
+  only and must never be created in real AWS.
+- Test tables use the same free-tier-safe capacity as the real tables: base **5/5** RCU/WCU and
+  every GSI **1/1** (aggregate **23/23** ≤ 25/25).
+- Tests use `de-users-test`, `de-simulations-test`, `de-simulation-results-test` and
+  `de-uniqueness-test` — **never** the dev tables (DynamoDB Local runs `-sharedDb`, so
+  wiping the dev tables would destroy local dev data).
+- Tests never reach AWS: `tests/setup.js` mocks `@aws-sdk/client-sqs` and sets dummy
+  `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, and the suites that touch S3 mock
+  `@aws-sdk/s3-request-presigner`.
 
 ### Commands
 
 ```bash
-# Run all tests once
+# Create/refresh the DynamoDB Local test tables (idempotent, run this first)
+npm run db:create:test
+
+# Run all tests once (serial -- the script appends --runInBand)
 npm test
 
 # Run tests in watch mode (re-runs on file changes)
@@ -40,10 +50,10 @@ npm run test:watch
 npm run test:coverage
 
 # Run a specific test file
-npx cross-env NODE_ENV=test npx jest tests/auth.test.js
+npx cross-env NODE_ENV=test npx jest tests/auth.test.js --runInBand
 
 # Run a single test by name
-npx cross-env NODE_ENV=test npx jest -t "should rotate the refresh token"
+npx cross-env NODE_ENV=test npx jest -t "should rotate the refresh token" --runInBand
 ```
 
 ### Test Environment
@@ -72,22 +82,29 @@ This file is configured as Jest's `setupFilesAfterEnv` in `package.json`:
 
 | Hook | Action |
 |---|---|
-| module load | Set `AWS_REGION` / `S3_BUCKET_NAME` / `SQS_QUEUE_URL` and mock `@aws-sdk/client-sqs` — `config/s3.js` and `config/sqs.js` read these env vars at **require time**, so they must be set before `app.js` is imported |
-| `beforeAll` | Set test env vars (`JWT_SECRET`, `JWT_REFRESH_SECRET`, `MONGODB_URI`), connect to test database |
-| `afterEach` | Clear all collections (delete all documents) — ensures clean state between tests |
-| `afterAll` | Close MongoDB connection |
+| module load | Set `AWS_REGION`, dummy `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `DYNAMODB_ENDPOINT`, the four `-test` table names, `S3_BUCKET_NAME`, `SQS_QUEUE_URL` and the JWT secrets, then mock `@aws-sdk/client-sqs` — `config/database.js`, `config/s3.js` and `config/sqs.js` read these env vars at **require time**, so they must be set before `app.js` is imported |
+| `beforeAll` | `ensureTables({ suffix: "-test" })` creates the four test tables (with a clear error if DynamoDB Local is unreachable), then wipes any leftover items |
+| `afterEach` | Delete **all items** from the four test tables (`Scan` then `BatchWriteItem` deletes, 25/batch with `UnprocessedItems` retry) |
+| `afterAll` | none — DynamoDB is a stateless HTTP API (there is no connection to close) |
 
 ### Environment Variables (test)
 
-The setup file sets these if not already in `.env`:
+The setup file sets these at module scope (before any application module is required):
 
 ```js
-process.env.JWT_SECRET = process.env.JWT_SECRET || "test-jwt-secret";
-process.env.JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "test-jwt-refresh-secret";
-process.env.MONGODB_URI =
-  process.env.MONGODB_URI_TEST ||
-  "mongodb://root:password123@localhost:27017/Dashboard-Test-Database?directConnection=true&authSource=admin";
-process.env.DB_NAME = "Dashboard-Test-Database";
+process.env.AWS_REGION = "ap-southeast-1";
+process.env.AWS_ACCESS_KEY_ID = "test";
+process.env.AWS_SECRET_ACCESS_KEY = "test";
+process.env.DYNAMODB_ENDPOINT = "http://localhost:8000";
+process.env.USERS_TABLE = "de-users-test";
+process.env.SIMULATIONS_TABLE = "de-simulations-test";
+process.env.RESULTS_TABLE = "de-simulation-results-test";
+process.env.UNIQUENESS_TABLE = "de-uniqueness-test";
+process.env.S3_BUCKET_NAME = "test-bucket";
+process.env.SQS_QUEUE_URL =
+  "https://sqs.ap-southeast-1.amazonaws.com/000000000000/test-queue";
+process.env.JWT_SECRET = "test-jwt-secret";
+process.env.JWT_REFRESH_SECRET = "test-jwt-refresh-secret";
 ```
 
 ## Test Patterns
@@ -134,21 +151,28 @@ const refreshToken = match ? match[1] : null;
 ### Creating Test Users
 
 ```js
-// Regular user (via model static — bypasses Zod middleware)
-const user = await User.register("testuser", "test@example.com", "password123");
-const token = user.generateJwtToken();
+const { signAccessToken } = require("../utils/tokens");
+const { createAdmin } = require("./helpers");
 
-// Admin user (via direct create — sets role)
-const admin = await User.create({
+// Regular user (via repository — bypasses Zod middleware)
+const user = await User.register("testuser", "test@example.com", "password123");
+const token = signAccessToken(user); // repo returns a plain { userId, _id, ... }
+
+// Admin user (helpers.js registers through the repo, then flips the role —
+// there is no admin-creation endpoint)
+const admin = await createAdmin({
   username: "admin",
   email: "admin@example.com",
   password: "adminpass",
-  role: "admin",
 });
-const adminToken = admin.generateJwtToken();
+const adminToken = signAccessToken(admin);
 ```
 
-> **Note:** `User.create()` triggers the `pre("save")` hook for password hashing, same as `User.register()`.
+> **Note:** access tokens are signed with `utils/tokens.signAccessToken(user)`; there is
+> no `user.generateJwtToken()` document method after the DynamoDB migration. To inspect
+> `refreshTokenHash`, use the raw `User.findById`/`User.findByEmail` result — the safe
+> serializer (`toSafeUser`) strips it. Fields removed with `REMOVE` are `undefined`,
+> not `null`.
 
 ### Creating Test Simulations
 
@@ -203,7 +227,7 @@ const sim = await Simulation.createSimulation(
 | SQS failure on create | 201 + `queued: false`, simulation marked `failed` |
 | Get all simulations | 200 + correct count |
 | Get empty list | 200 + count 0 |
-| Get with pagination | Correct page/totalPages |
+| Get with pagination | Correct cursor page + `nextCursor` |
 | Get with status filter | Only matching status returned |
 | Get without token | 401 |
 | Get single simulation | 200 + simulation data |
@@ -211,9 +235,9 @@ const sim = await Simulation.createSimulation(
 | Get a non-existent simulation | 404 |
 | Get results endpoint | 200 + simulationData grid |
 | Results for a non-existent simulation | 404 |
-| Delete own simulation | 200 + removed from DB |
+| Delete own simulation | 200 + removed from DB, result items cascaded |
 | Delete another user's simulation | 403 |
-| Cancel own simulation | 200 + "cancelled" message |
+| Cancel a pending/running simulation | 200 + "cancelled" message |
 | Cancel a completed simulation | 409 + "Cannot cancel" |
 
 ### Admin Tests (`tests/admin.test.js`)
@@ -223,7 +247,7 @@ const sim = await Simulation.createSimulation(
 | Regular user denied admin access | 403 |
 | Admin user allowed admin access | 200 |
 | No token on admin route | 401 |
-| List users with pagination | Correct count + pagination |
+| List users with cursor pagination | Follows `nextCursor` to exhaustion |
 | Refresh token not in user list | Neither `refreshToken` nor `refreshTokenHash` is exposed |
 | Get user by ID | 200 + user details |
 | Get non-existent user | 404 |
@@ -279,13 +303,14 @@ field is rejected by Zod.
 const request = require("supertest");
 const app = require("../app");
 const User = require("../models/user");
+const { signAccessToken } = require("../utils/tokens");
 
 describe("New Feature Endpoints", () => {
   let token;
 
   beforeEach(async () => {
     const user = await User.register("testuser", "test@example.com", "password123");
-    token = user.generateJwtToken();
+    token = signAccessToken(user);
   });
 
   describe("GET /api/v1/new-feature", () => {
@@ -309,7 +334,7 @@ describe("New Feature Endpoints", () => {
 ### Best Practices
 
 1. **Use `beforeEach` for setup** — creates fresh test data for each test, ensuring isolation
-2. **Don't share state between tests** — `afterEach` in `setup.js` clears all collections
+2. **Don't share state between tests** — `afterEach` in `setup.js` deletes every item from the test tables
 3. **Test the API boundary** — use supertest to test HTTP behavior, not internal functions
 4. **Test both success and failure paths** — every endpoint should have positive and negative tests
 5. **Test authorization** — verify non-owners can't access other users' resources

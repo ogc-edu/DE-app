@@ -2,6 +2,8 @@ const request = require("supertest");
 const crypto = require("node:crypto");
 const app = require("../app");
 const User = require("../models/user");
+const { signAccessToken } = require("../utils/tokens");
+const { createAdmin, setIsActivePreservingToken } = require("./helpers");
 
 describe("Auth Endpoints", () => {
   const testUser = {
@@ -77,9 +79,8 @@ describe("Auth Endpoints", () => {
     });
 
     it("should not login if account is suspended", async () => {
-      const user = await User.findOne({ email: testUser.email });
-      user.isActive = false;
-      await user.save();
+      const user = await User.findByEmail(testUser.email);
+      await User.setActive(user.userId, false);
 
       const res = await request(app)
         .post("/api/v1/login")
@@ -95,7 +96,7 @@ describe("Auth Endpoints", () => {
 
     beforeEach(async () => {
       const user = await User.register(testUser.username, testUser.email, testUser.password);
-      token = user.generateJwtToken();
+      token = signAccessToken(user);
     });
 
     it("should verify a valid token", async () => {
@@ -125,8 +126,8 @@ describe("Auth Endpoints", () => {
 
     it("should return 403 when suspended user accesses protected route", async () => {
       const user = await User.register(testUser.username, testUser.email, testUser.password);
-      const token = user.generateJwtToken();
-      await User.findByIdAndUpdate(user._id, { isActive: false });
+      const token = signAccessToken(user);
+      await User.setActive(user.userId, false);
 
       const res = await request(app)
         .get("/api/v1/simulation/get")
@@ -176,7 +177,7 @@ describe("Auth Endpoints", () => {
     });
 
     it("should store only a sha256 hash of the refresh token, never the raw token", async () => {
-      const user = await User.findOne({ email: testUser.email }).select("+refreshTokenHash");
+      const user = await User.findByEmail(testUser.email);
 
       expect(user.refreshTokenHash).toHaveLength(64);
       expect(user.refreshTokenHash).not.toBe(refreshToken);
@@ -198,17 +199,16 @@ describe("Auth Endpoints", () => {
     });
 
     it("should reject a refresh after the user is suspended", async () => {
-      const admin = await User.create({
+      const admin = await createAdmin({
         username: "suspendadmin",
         email: "suspendadmin@example.com",
         password: "password123",
-        role: "admin",
       });
-      const user = await User.findOne({ email: testUser.email });
+      const user = await User.findByEmail(testUser.email);
 
       const suspendRes = await request(app)
-        .patch(`/api/v1/admin/users/${user._id.toString()}/suspend`)
-        .set("Authorization", `Bearer ${admin.generateJwtToken()}`);
+        .patch(`/api/v1/admin/users/${user.userId}/suspend`)
+        .set("Authorization", `Bearer ${signAccessToken(admin)}`);
       expect(suspendRes.statusCode).toBe(200);
 
       const res = await request(app)
@@ -221,10 +221,11 @@ describe("Auth Endpoints", () => {
     it("should reject a refresh for an inactive user even when the stored hash still matches", async () => {
       // Suspend directly so the hash is left intact -- exercises the
       // isActive guard rather than the cleared-hash path.
-      const user = await User.findOne({ email: testUser.email });
-      await User.findByIdAndUpdate(user._id, { isActive: false });
+      const user = await User.findByEmail(testUser.email);
+      await setIsActivePreservingToken(user.userId, false);
 
-      const stillStored = await User.findById(user._id).select("+refreshTokenHash");
+      const stillStored = await User.findById(user.userId);
+      expect(stillStored.refreshTokenHash).toBeDefined();
       expect(stillStored.refreshTokenHash).not.toBeNull();
 
       const res = await request(app)
@@ -238,7 +239,7 @@ describe("Auth Endpoints", () => {
     it("should reject an invalid refresh token", async () => {
       const res = await request(app)
         .post("/api/v1/refresh")
-        .set("Cookie", `refreshToken=invalidtoken`);
+        .set("Cookie", "refreshToken=invalidtoken");
 
       expect(res.statusCode).toBe(401);
     });
@@ -279,8 +280,8 @@ describe("Auth Endpoints", () => {
         .post("/api/v1/logout")
         .set("Cookie", `refreshToken=${refreshToken}`);
 
-      const user = await User.findOne({ email: testUser.email }).select("+refreshTokenHash");
-      expect(user.refreshTokenHash).toBeNull();
+      const user = await User.findByEmail(testUser.email);
+      expect(user.refreshTokenHash).toBeUndefined();
     });
   });
 });

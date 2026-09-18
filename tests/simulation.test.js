@@ -1,8 +1,9 @@
+const crypto = require("node:crypto");
 const request = require("supertest");
-const mongoose = require("mongoose");
 const app = require("../app");
 const User = require("../models/user");
 const Simulation = require("../models/simulation");
+const { signAccessToken } = require("../utils/tokens");
 // Mocked in tests/setup.js — grab the handles to assert on SQS payloads.
 const { SendMessageCommand, __sqsSendMock } = require("@aws-sdk/client-sqs");
 
@@ -29,8 +30,8 @@ describe("Simulation Endpoints", () => {
     __sqsSendMock.mockClear();
     SendMessageCommand.mockClear();
     const user = await User.register(testUser.username, testUser.email, testUser.password);
-    userId = user._id.toString();
-    token = user.generateJwtToken();
+    userId = user.userId;
+    token = signAccessToken(user);
   });
 
   describe("POST /api/v1/simulation/create", () => {
@@ -50,7 +51,7 @@ describe("Simulation Endpoints", () => {
         .set("Authorization", `Bearer ${token}`)
         .send(validSimInput);
 
-      const sim = await Simulation.findById(res.body.simulationId);
+      const sim = await Simulation.getSimulationById(res.body.simulationId);
       expect(sim.totalModels).toBe(2 * 2 * 1 * 1);
     });
 
@@ -77,7 +78,7 @@ describe("Simulation Endpoints", () => {
         .send({ ...validSimInput, np: 20, f: 0.7, cr: 0.8, gen: 500, dim: 10 });
 
       expect(res.statusCode).toBe(201);
-      const sim = await Simulation.findById(res.body.simulationId);
+      const sim = await Simulation.getSimulationById(res.body.simulationId);
       expect(sim.np).toBe(20);
       expect(sim.f).toBe(0.7);
       expect(sim.cr).toBe(0.8);
@@ -91,7 +92,7 @@ describe("Simulation Endpoints", () => {
         .set("Authorization", `Bearer ${token}`)
         .send(validSimInput);
 
-      const sim = await Simulation.findById(res.body.simulationId);
+      const sim = await Simulation.getSimulationById(res.body.simulationId);
       expect(sim.np).toBe(15);
       expect(sim.f).toBe(0.5);
       expect(sim.cr).toBe(0.9);
@@ -146,20 +147,22 @@ describe("Simulation Endpoints", () => {
 
       expect(res.statusCode).toBe(201);
       expect(res.body.queued).toBe(false);
-      const sim = await Simulation.findById(res.body.simulationId);
+      const sim = await Simulation.getSimulationById(res.body.simulationId);
       expect(sim.status).toBe("failed");
     });
 
-    it("should accept the 'running' status set by workers", async () => {
-      const sim = await Simulation.createSimulation(userId, validSimInput.functions, validSimInput.methods);
-      const updated = await Simulation.findByIdAndUpdate(
-        sim._id,
-        { status: "running", progress: 10 },
-        { new: true }
+    it("should accept the 'running' status and progress set by workers", async () => {
+      const sim = await Simulation.createSimulation(
+        userId,
+        validSimInput.functions,
+        validSimInput.methods
       );
+      await Simulation.updateProgress(sim.simulationId, 1, 10, 0.5);
+      await Simulation.setStatus(sim.simulationId, "running");
+
+      const updated = await Simulation.getSimulationById(sim.simulationId);
       expect(updated.status).toBe("running");
-      const simAfter = await Simulation.findById(sim._id);
-      expect(simAfter.status).toBe("running");
+      expect(updated.progress).toBe(10);
     });
   });
 
@@ -185,23 +188,37 @@ describe("Simulation Endpoints", () => {
       expect(res.body.simulations).toHaveLength(0);
     });
 
-    it("should support pagination", async () => {
+    it("should paginate with an opaque cursor", async () => {
       for (let i = 0; i < 3; i++) {
         await Simulation.createSimulation(userId, validSimInput.functions, validSimInput.methods);
       }
-      const res = await request(app)
-        .get("/api/v1/simulation/get?page=1&limit=2")
+      const first = await request(app)
+        .get("/api/v1/simulation/get?limit=2")
         .set("Authorization", `Bearer ${token}`);
 
-      expect(res.statusCode).toBe(200);
-      expect(res.body.simulations).toHaveLength(2);
-      expect(res.body.currentPage).toBe(1);
-      expect(res.body.totalPages).toBe(2);
+      expect(first.statusCode).toBe(200);
+      expect(first.body.simulations).toHaveLength(2);
+      expect(first.body.simulationCount).toBe(2);
+      expect(first.body.nextCursor).toBeTruthy();
+
+      const second = await request(app)
+        .get(
+          `/api/v1/simulation/get?limit=2&cursor=${encodeURIComponent(first.body.nextCursor)}`
+        )
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(second.statusCode).toBe(200);
+      expect(second.body.simulations).toHaveLength(1);
+      expect(second.body.nextCursor).toBeNull();
     });
 
     it("should support status filter", async () => {
-      const sim = await Simulation.createSimulation(userId, validSimInput.functions, validSimInput.methods);
-      await Simulation.findByIdAndUpdate(sim._id, { status: "completed" });
+      const sim = await Simulation.createSimulation(
+        userId,
+        validSimInput.functions,
+        validSimInput.methods
+      );
+      await Simulation.setStatus(sim.simulationId, "completed");
       await Simulation.createSimulation(userId, validSimInput.functions, validSimInput.methods);
 
       const res = await request(app)
@@ -221,32 +238,36 @@ describe("Simulation Endpoints", () => {
 
   describe("GET /api/v1/simulation/get/:simulationId", () => {
     it("should return a single simulation", async () => {
-      const sim = await Simulation.createSimulation(userId, validSimInput.functions, validSimInput.methods);
+      const sim = await Simulation.createSimulation(
+        userId,
+        validSimInput.functions,
+        validSimInput.methods
+      );
       const res = await request(app)
-        .get(`/api/v1/simulation/get/${sim._id}`)
+        .get(`/api/v1/simulation/get/${sim.simulationId}`)
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.statusCode).toBe(200);
-      expect(res.body.simulation._id).toBe(sim._id.toString());
+      expect(res.body.simulation._id).toBe(sim.simulationId);
     });
 
     it("should not allow access to another user's simulation", async () => {
       const otherUser = await User.register("other", "other@example.com", "password123");
       const otherSim = await Simulation.createSimulation(
-        otherUser._id.toString(),
+        otherUser.userId,
         validSimInput.functions,
         validSimInput.methods
       );
 
       const res = await request(app)
-        .get(`/api/v1/simulation/get/${otherSim._id}`)
+        .get(`/api/v1/simulation/get/${otherSim.simulationId}`)
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.statusCode).toBe(403);
     });
 
     it("should return 404 for a non-existent simulation", async () => {
-      const missingId = new mongoose.Types.ObjectId().toString();
+      const missingId = crypto.randomUUID();
       const res = await request(app)
         .get(`/api/v1/simulation/get/${missingId}`)
         .set("Authorization", `Bearer ${token}`);
@@ -257,10 +278,19 @@ describe("Simulation Endpoints", () => {
   });
 
   describe("GET /api/v1/simulation/get/:simulationId/results", () => {
-    it("should return simulation results grid", async () => {
-      const sim = await Simulation.createSimulation(userId, validSimInput.functions, validSimInput.methods);
+    it("should return the simulationData grid from simulation_results", async () => {
+      const sim = await Simulation.createSimulation(
+        userId,
+        validSimInput.functions,
+        validSimInput.methods
+      );
+      await Simulation.saveResults(sim.simulationId, [
+        { functionId: 1, mutationId: 1, crossoverId: 1, selectionId: 1, lowestFitness: 0.5 },
+        { functionId: 2, mutationId: 1, crossoverId: 1, selectionId: 1, lowestFitness: 1.5 },
+      ]);
+
       const res = await request(app)
-        .get(`/api/v1/simulation/get/${sim._id}/results`)
+        .get(`/api/v1/simulation/get/${sim.simulationId}/results`)
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.statusCode).toBe(200);
@@ -269,10 +299,19 @@ describe("Simulation Endpoints", () => {
       expect(res.body).toHaveProperty("completedModels");
       expect(res.body).toHaveProperty("progress");
       expect(res.body).toHaveProperty("simulationData");
+      expect(res.body.progress).toBe(100);
+      expect(res.body.completedModels).toBe(2);
+      expect(res.body.simulationData).toHaveLength(2);
+      expect(res.body.simulationData).toEqual(
+        expect.arrayContaining([
+          { functionId: 1, mutationId: 1, crossoverId: 1, selectionId: 1, lowestFitness: 0.5 },
+          { functionId: 2, mutationId: 1, crossoverId: 1, selectionId: 1, lowestFitness: 1.5 },
+        ])
+      );
     });
 
     it("should return 404 for a non-existent simulation", async () => {
-      const missingId = new mongoose.Types.ObjectId().toString();
+      const missingId = crypto.randomUUID();
       const res = await request(app)
         .get(`/api/v1/simulation/get/${missingId}/results`)
         .set("Authorization", `Bearer ${token}`);
@@ -283,29 +322,37 @@ describe("Simulation Endpoints", () => {
   });
 
   describe("DELETE /api/v1/simulation/delete/:simulationId", () => {
-    it("should delete a simulation", async () => {
-      const sim = await Simulation.createSimulation(userId, validSimInput.functions, validSimInput.methods);
+    it("should delete a simulation and cascade its result items", async () => {
+      const sim = await Simulation.createSimulation(
+        userId,
+        validSimInput.functions,
+        validSimInput.methods
+      );
+      await Simulation.saveResults(sim.simulationId, [
+        { functionId: 1, mutationId: 1, crossoverId: 1, selectionId: 1, lowestFitness: 0.5 },
+      ]);
+
       const res = await request(app)
-        .delete(`/api/v1/simulation/delete/${sim._id}`)
+        .delete(`/api/v1/simulation/delete/${sim.simulationId}`)
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.statusCode).toBe(200);
       expect(res.body).toHaveProperty("message", "Simulation deleted successfully");
 
-      const deleted = await Simulation.findById(sim._id);
-      expect(deleted).toBeNull();
+      expect(await Simulation.getSimulationById(sim.simulationId)).toBeNull();
+      expect(await Simulation.getResults(sim.simulationId)).toHaveLength(0);
     });
 
     it("should not delete another user's simulation", async () => {
       const otherUser = await User.register("other", "other@example.com", "password123");
       const otherSim = await Simulation.createSimulation(
-        otherUser._id.toString(),
+        otherUser.userId,
         validSimInput.functions,
         validSimInput.methods
       );
 
       const res = await request(app)
-        .delete(`/api/v1/simulation/delete/${otherSim._id}`)
+        .delete(`/api/v1/simulation/delete/${otherSim.simulationId}`)
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.statusCode).toBe(403);
@@ -313,21 +360,47 @@ describe("Simulation Endpoints", () => {
   });
 
   describe("POST /api/v1/simulation/cancel/:simulationId", () => {
-    it("should cancel a simulation", async () => {
-      const sim = await Simulation.createSimulation(userId, validSimInput.functions, validSimInput.methods);
+    it("should cancel a pending simulation", async () => {
+      const sim = await Simulation.createSimulation(
+        userId,
+        validSimInput.functions,
+        validSimInput.methods
+      );
       const res = await request(app)
-        .post(`/api/v1/simulation/cancel/${sim._id}`)
+        .post(`/api/v1/simulation/cancel/${sim.simulationId}`)
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.statusCode).toBe(200);
       expect(res.body).toHaveProperty("message", "Simulation cancelled successfully");
     });
 
-    it("should reject cancelling a completed simulation", async () => {
-      const sim = await Simulation.createSimulation(userId, validSimInput.functions, validSimInput.methods);
-      await Simulation.findByIdAndUpdate(sim._id, { status: "completed" });
+    it("should cancel a running simulation", async () => {
+      const sim = await Simulation.createSimulation(
+        userId,
+        validSimInput.functions,
+        validSimInput.methods
+      );
+      await Simulation.setStatus(sim.simulationId, "running");
+
       const res = await request(app)
-        .post(`/api/v1/simulation/cancel/${sim._id}`)
+        .post(`/api/v1/simulation/cancel/${sim.simulationId}`)
+        .set("Authorization", `Bearer ${token}`);
+
+      expect(res.statusCode).toBe(200);
+      const after = await Simulation.getSimulationById(sim.simulationId);
+      expect(after.status).toBe("cancelled");
+    });
+
+    it("should reject cancelling a completed simulation", async () => {
+      const sim = await Simulation.createSimulation(
+        userId,
+        validSimInput.functions,
+        validSimInput.methods
+      );
+      await Simulation.setStatus(sim.simulationId, "completed");
+
+      const res = await request(app)
+        .post(`/api/v1/simulation/cancel/${sim.simulationId}`)
         .set("Authorization", `Bearer ${token}`);
 
       expect(res.statusCode).toBe(409);

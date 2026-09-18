@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const crypto = require("node:crypto");
 const User = require("../models/user");
+const { signAccessToken, signRefreshToken } = require("../utils/tokens");
 
 const verify = async (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -10,17 +11,18 @@ const verify = async (req, res, next) => {
   }
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.userId).select("_id username email affiliation profilePicture role");
+    const user = await User.findById(decoded.userId);
     if (!user) {
       return res.status(401).json({ message: "Unauthorized" });
     }
+    const safeUser = User.toSafeUser(user);
     const userData = {
-      userId: user._id,
-      username: user.username,
-      email: user.email,
-      affiliation: user.affiliation,
-      profilePicture: user.profilePicture,
-      role: user.role,
+      userId: user.userId,
+      username: safeUser.username,
+      email: safeUser.email,
+      affiliation: safeUser.affiliation,
+      profilePicture: safeUser.profilePicture,
+      role: safeUser.role,
     };
     res.status(200).json({ status: true, userData: userData });
   } catch (err) {
@@ -42,7 +44,7 @@ const refresh = async (req, res, next) => {
       return res.status(401).json({ message: "Invalid or expired refresh token" });
     }
 
-    const user = await User.findById(decoded.userId).select("+refreshTokenHash +isActive");
+    const user = await User.findById(decoded.userId);
     if (!user) {
       return res.status(401).json({ message: "User not found" });
     }
@@ -64,9 +66,9 @@ const refresh = async (req, res, next) => {
       return res.status(401).json({ message: "Refresh token does not match" });
     }
 
-    const newAccessToken = user.generateJwtToken();
-    const newRefreshToken = user.generateRefreshToken();
-    await user.saveRefreshToken(newRefreshToken);
+    const newAccessToken = signAccessToken(user);
+    const newRefreshToken = signRefreshToken(user);
+    await User.saveRefreshToken(user.userId, newRefreshToken);
 
     res.cookie("refreshToken", newRefreshToken, {
       httpOnly: true,
@@ -96,9 +98,9 @@ const logout = async (req, res, next) => {
       return res.status(200).json({ message: "Logged out successfully" });
     }
 
-    const user = await User.findById(decoded.userId).select("+refreshTokenHash");
+    const user = await User.findById(decoded.userId);
     if (user) {
-      await user.clearRefreshToken();
+      await User.clearRefreshToken(user.userId);
     }
 
     res.clearCookie("refreshToken");

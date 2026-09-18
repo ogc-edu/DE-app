@@ -23,11 +23,11 @@ const createSimulation = async (req, res, next) => {
       await sendSimulationJob(simulation);
     } catch (err) {
       queued = false;
-      logger.error(`Failed to enqueue simulation ${simulation._id} to SQS: ${err.message}`);
+      logger.error(`Failed to enqueue simulation ${simulation.simulationId} to SQS: ${err.message}`);
       await simulations
-        .findByIdAndUpdate(simulation._id, { status: "failed" })
+        .setStatus(simulation.simulationId, "failed")
         .catch((updateErr) =>
-          logger.error(`Failed to mark simulation ${simulation._id} as failed: ${updateErr.message}`)
+          logger.error(`Failed to mark simulation ${simulation.simulationId} as failed: ${updateErr.message}`)
         );
     }
 
@@ -35,7 +35,7 @@ const createSimulation = async (req, res, next) => {
       message: queued
         ? "Simulation created successfully"
         : "Simulation created but failed to enqueue to the job queue",
-      simulationId: simulation._id.toString(),
+      simulationId: simulation.simulationId,
       queued,
     });
   } catch (err) {
@@ -78,7 +78,7 @@ const importSimulation = async (req, res, next) => {
 
     res.status(201).json({
       message: "Data imported successfully",
-      simulationId: simulation._id.toString(),
+      simulationId: simulation.simulationId,
       totalModels: simulation.totalModels,
     });
   } catch (err) {
@@ -89,11 +89,13 @@ const importSimulation = async (req, res, next) => {
 const getAllSimulations = async (req, res, next) => {
   try {
     const userId = req.userId;
-    const page = parseInt(req.query.page) || 1;
+    // limit 0 keeps the legacy "return everything" behavior; cursor/status are
+    // the DynamoDB pagination contract (page is deprecated).
     const limit = parseInt(req.query.limit) || 0;
+    const cursor = req.query.cursor || undefined;
     const status = req.query.status;
 
-    const result = await simulations.getSimulation(userId, { page, limit, status });
+    const result = await simulations.getSimulation(userId, { limit, cursor, status });
     res.status(200).json(result);
   } catch (err) {
     next(err);
@@ -148,10 +150,10 @@ const getSingleSimulation = async (req, res, next) => {
     if (!simulation) {
       throw new NotFoundError("Simulation not found");
     }
-    if (simulation.userId.toString() !== userId) {
+    if (simulation.userId !== userId) {
       throw new ForbiddenError("user id not authorized to access this simulation");
     }
-    res.status(200).json({ simulation });
+    res.status(200).json({ simulation: simulations.serializeSimulation(simulation) });
   } catch (err) {
     next(err);
   }
@@ -165,16 +167,17 @@ const getSimulationResults = async (req, res, next) => {
     if (!simulation) {
       throw new NotFoundError("Simulation not found");
     }
-    if (simulation.userId.toString() !== userId) {
+    if (simulation.userId !== userId) {
       throw new ForbiddenError("user id not authorized to access this simulation");
     }
+    const simulationData = await simulations.getResults(simulationId);
     res.status(200).json({
-      simulationId: simulation._id,
+      simulationId: simulation.simulationId,
       status: simulation.status,
       totalModels: simulation.totalModels,
       completedModels: simulation.completedModels,
       progress: simulation.progress,
-      simulationData: simulation.simulationData,
+      simulationData,
     });
   } catch (err) {
     next(err);

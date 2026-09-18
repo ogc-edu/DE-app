@@ -1,12 +1,13 @@
 const users = require("../models/user");
+const { signAccessToken, signRefreshToken } = require("../utils/tokens");
 
 const login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
     const user = await users.login(email, password);
-    const accessToken = user.generateJwtToken();
-    const refreshToken = user.generateRefreshToken();
-    await user.saveRefreshToken(refreshToken);
+    const accessToken = signAccessToken(user);
+    const refreshToken = signRefreshToken(user);
+    await users.saveRefreshToken(user.userId, refreshToken);
 
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
