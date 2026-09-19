@@ -6,11 +6,18 @@ const {
 
 const AWS_REGION = process.env.AWS_REGION || "us-east-1";
 const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL;
+// Local dev/test talks to ElasticMQ (http://localhost:9324). MUST be empty in
+// AWS so the SDK resolves the real regional endpoint — same convention as
+// DYNAMODB_ENDPOINT in config/database.js.
+const SQS_ENDPOINT = process.env.SQS_ENDPOINT;
 
 // SDK v3 uses the default credential chain: env vars (AWS_ACCESS_KEY_ID /
 // AWS_SECRET_ACCESS_KEY) in dev, EC2 IAM role in production. No explicit
 // credentials are passed here (same convention as config/s3.js).
-const sqsClient = new SQSClient({ region: AWS_REGION });
+const sqsClient = new SQSClient({
+  region: AWS_REGION,
+  ...(SQS_ENDPOINT ? { endpoint: SQS_ENDPOINT } : {}),
+});
 
 // Build the exact worker contract the EC2 spawner (DE-forEC2/spawner.js)
 // expects. `de.exe` parses the array fields as comma-separated values, so we

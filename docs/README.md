@@ -14,7 +14,7 @@ Complete documentation for the Differential Evolution Research Dashboard backend
 | [Architecture](./architecture.md) | Project structure, design decisions, request lifecycle |
 | [Authentication](./authentication.md) | JWT auth flow, refresh token rotation, role-based access |
 | [API Reference](./api-reference.md) | All endpoints with request/response examples |
-| [Database Models](./models.md) | Mongoose schemas, fields, indexes, static methods |
+| [Database Models](./models.md) | DynamoDB tables, keys, GSIs, item shapes (⚠️ still describes the old Mongoose schemas — see repo root `CLAUDE.md`) |
 | [Middleware](./middleware.md) | Auth, admin, validation, error handling, logging |
 | [Testing](./testing.md) | Test structure, running tests, coverage |
 
@@ -30,7 +30,7 @@ Complete documentation for the Differential Evolution Research Dashboard backend
 |---|---|
 | Runtime | Node.js 20 |
 | Framework | Express 5 |
-| Database | MongoDB 7 (via Mongoose 9) |
+| Database | Amazon DynamoDB (AWS SDK v3, no ODM) |
 | Auth | JWT (jsonwebtoken) + bcrypt; refresh tokens hashed at rest |
 | Validation | Zod 4 |
 | Logging | Winston + Morgan |
@@ -57,4 +57,4 @@ This backend serves a research dashboard for comparing Differential Evolution (D
 - **Input validation** — Zod schemas on all mutation endpoints
 - **Structured logging** — Winston logger with file + console transports
 - **API documentation** — Swagger UI auto-generated from JSDoc annotations
-- **Dockerized** — multi-stage Dockerfile + docker-compose with MongoDB
+- **Dockerized** — multi-stage Dockerfile + docker-compose with DynamoDB Local

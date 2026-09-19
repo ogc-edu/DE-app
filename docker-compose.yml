@@ -13,6 +13,19 @@ services:
     volumes:
       - ./docker/dynamodb:/home/dynamodblocal/data
 
+  # ElasticMQ — local, SQS-compatible queue for dev/test. Both the backend
+  # producer and the DE-forEC2 worker talk to it via SQS_QUEUE_URL
+  # (http://localhost:9324/000000000000/DE-Queue) + SQS_ENDPOINT
+  # (http://localhost:9324). Production uses the real AWS SQS endpoint — leave
+  # SQS_ENDPOINT empty there.
+  elasticmq:
+    image: softwaremill/elasticmq-native:latest
+    container_name: de-elasticmq
+    ports:
+      - "9324:9324"
+    volumes:
+      - ./docker/elasticmq/elasticmq.conf:/opt/elasticmq.conf
+
   backend:
     build:
       context: .
@@ -24,6 +37,9 @@ services:
     environment:
       # Talk to the sibling DynamoDB Local container, not localhost.
       DYNAMODB_ENDPOINT: http://dynamodb:8000
+      # Talk to the sibling ElasticMQ container (SQS-compatible).
+      SQS_ENDPOINT: http://elasticmq:9324
+      SQS_QUEUE_URL: http://elasticmq:9324/000000000000/DE-Queue
       AWS_REGION: ap-southeast-1
       USERS_TABLE: de-users
       SIMULATIONS_TABLE: de-simulations
@@ -39,3 +55,4 @@ services:
       - /app/node_modules
     depends_on:
       - dynamodb
+      - elasticmq

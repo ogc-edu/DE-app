@@ -1,6 +1,6 @@
 # Differential Evolution Research Dashboard Backend
 
-A Dockerized Express 5 backend that accepts simulation parameter sets from researchers, queues them for processing by EC2 workers, and stores results (per-model-per-function lowest fitness values) to MongoDB with real-time progress tracking.
+A Dockerized Express 5 backend that accepts simulation parameter sets from researchers, queues them for processing by EC2 workers, and stores results (per-model-per-function lowest fitness values) to Amazon DynamoDB with real-time progress tracking.
 
 ## Quick Start
 
@@ -11,7 +11,11 @@ npm install
 # Create .env (see docs/setup.md for details)
 cp .env.example .env  # or create manually
 
-# Start development server (needs a replica-set MongoDB: docker compose up -d mongo)
+# Start DynamoDB Local and create the tables
+docker compose up -d dynamodb
+npm run db:create
+
+# Start development server
 npm run dev
 
 # Or start everything with Docker Compose
@@ -35,7 +39,7 @@ Full documentation is available in the [`docs/`](./docs/) directory:
 | [Architecture](./docs/architecture.md) | Project structure, design decisions, request lifecycle |
 | [Authentication](./docs/authentication.md) | JWT auth flow, refresh token rotation, RBAC |
 | [API Reference](./docs/api-reference.md) | All endpoints with request/response examples |
-| [Database Models](./docs/models.md) | Mongoose schemas, fields, indexes, methods |
+| [Database Models](./docs/models.md) | DynamoDB tables, keys, GSIs, item shapes (⚠️ still describes the old Mongoose schemas — see `CLAUDE.md`) |
 | [Middleware](./docs/middleware.md) | Auth, admin, validation, error handling, logging |
 | [Testing](./docs/testing.md) | Test structure, running tests, coverage |
 
@@ -45,7 +49,7 @@ Full documentation is available in the [`docs/`](./docs/) directory:
 |---|---|
 | Runtime | Node.js 20 |
 | Framework | Express 5 |
-| Database | MongoDB 7 (via Mongoose 9) |
+| Database | Amazon DynamoDB (AWS SDK v3, no ODM) |
 | Auth | JWT + bcrypt + refresh token rotation (hashed at rest) |
 | Validation | Zod 4 |
 | Logging | Winston + Morgan |
@@ -74,8 +78,8 @@ See the [API Reference](./docs/api-reference.md) for complete details.
 ```bash
 npm start              # Start production server
 npm run dev            # Start dev server (nodemon hot-reload)
-npm test               # Run all tests -- requires replica-set MongoDB:
-                       #   docker compose up -d mongo   (container de-db, port 27017)
+npm test               # Run all tests -- requires DynamoDB Local:
+                       #   docker compose up -d dynamodb   (container de-dynamodb, port 8000)
 npm run test:watch     # Run tests in watch mode
 npm run test:coverage  # Run tests with coverage report
 ```
@@ -88,7 +92,7 @@ npm run test:coverage  # Run tests with coverage report
 ├── config/             # Database, logger, S3 and SQS clients
 ├── controllers/        # Route handlers (auth, simulation, admin, user)
 ├── middleware/         # auth, admin, validation, error handling
-├── models/             # Mongoose schemas (User, Simulation)
+├── models/             # DynamoDB data-access facades (User, Simulation) — no ODM
 ├── routes/             # Express routers (auth, simulation, admin, user)
 ├── validators/         # Zod validation schemas
 ├── utils/              # importParser (.txt import format) + typed HTTP errors
@@ -96,7 +100,7 @@ npm run test:coverage  # Run tests with coverage report
 ├── tests/              # Jest + Supertest test suites
 ├── Dockerfile          # Production image
 ├── Dockerfile.dev      # Development image
-└── docker-compose.yml  # MongoDB + backend services
+└── docker-compose.yml  # DynamoDB Local + backend services
 ```
 
 See [Architecture](./docs/architecture.md) for detailed breakdown.
