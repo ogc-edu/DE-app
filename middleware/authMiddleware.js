@@ -9,15 +9,15 @@ const authMiddleware = async (req, res, next) => {
   }
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.userId).select("_id username role isActive");
+    const user = await User.findById(decoded.userId);
     if (!user) {
       return res.status(401).json({ message: "Token is not valid, user not found" });
     }
     if (!user.isActive) {
       return res.status(403).json({ message: "Account has been suspended" });
     }
-    req.userId = decoded.userId;
-    req.user = user;
+    req.userId = user.userId;
+    req.user = User.toSafeUser(user);
     next();
   } catch (err) {
     return res.status(401).json({ message: "Token is not valid" });

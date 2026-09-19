@@ -1,6 +1,7 @@
 const request = require("supertest");
 const app = require("../app");
 const User = require("../models/user");
+const { signAccessToken } = require("../utils/tokens");
 
 // Do not hit AWS in tests; return a canned presigned URL.
 jest.mock("@aws-sdk/s3-request-presigner", () => ({
@@ -19,8 +20,8 @@ describe("User Profile Endpoints", () => {
 
   beforeEach(async () => {
     const user = await User.register(testUser.username, testUser.email, testUser.password);
-    userId = user._id.toString();
-    token = user.generateJwtToken();
+    userId = user.userId;
+    token = signAccessToken(user);
   });
 
   describe("GET /api/v1/user/profile", () => {
@@ -141,8 +142,8 @@ describe("User Profile Endpoints", () => {
 
       expect(res.statusCode).toBe(401);
 
-      const user = await User.findById(userId).select("+refreshTokenHash");
-      expect(user.refreshTokenHash).toBeNull();
+      const user = await User.findById(userId);
+      expect(user.refreshTokenHash).toBeUndefined();
     });
 
     it("should reject new password exceeding 12 characters (Zod validation)", async () => {
@@ -197,7 +198,7 @@ describe("User Profile Endpoints", () => {
       expect(res.statusCode).toBe(200);
       expect(res.body.user).toHaveProperty("profilePicture");
       expect(res.body.user.profilePicture).toBe(
-        `https://test-bucket.s3.us-east-1.amazonaws.com/profile-images/${userId}?v=abc123`
+        `https://test-bucket.s3.ap-southeast-1.amazonaws.com/profile-images/${userId}?v=abc123`
       );
     });
 
@@ -209,7 +210,7 @@ describe("User Profile Endpoints", () => {
 
       expect(res.statusCode).toBe(200);
       expect(res.body.user.profilePicture).toBe(
-        `https://test-bucket.s3.us-east-1.amazonaws.com/profile-images/${userId}`
+        `https://test-bucket.s3.ap-southeast-1.amazonaws.com/profile-images/${userId}`
       );
     });
 

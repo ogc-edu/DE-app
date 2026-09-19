@@ -2,6 +2,7 @@ const request = require("supertest");
 const app = require("../app");
 const User = require("../models/user");
 const Simulation = require("../models/simulation");
+const { signAccessToken } = require("../utils/tokens");
 // Mocked in tests/setup.js — used to assert that imports never touch SQS.
 const { __sqsSendMock } = require("@aws-sdk/client-sqs");
 
@@ -30,8 +31,8 @@ describe("POST /api/v1/simulation/import", () => {
   beforeEach(async () => {
     __sqsSendMock.mockClear();
     const user = await User.register(testUser.username, testUser.email, testUser.password);
-    userId = user._id.toString();
-    token = user.generateJwtToken();
+    userId = user.userId;
+    token = signAccessToken(user);
   });
 
   it("returns 401 without a token", async () => {
@@ -52,7 +53,7 @@ describe("POST /api/v1/simulation/import", () => {
     expect(res.body).toHaveProperty("simulationId");
     expect(res.body.totalModels).toBe(2);
 
-    const sim = await Simulation.findById(res.body.simulationId);
+    const sim = await Simulation.getSimulationById(res.body.simulationId);
     expect(sim.status).toBe("completed");
     expect(sim.totalModels).toBe(2);
     expect(sim.completedModels).toBe(2);
@@ -63,17 +64,20 @@ describe("POST /api/v1/simulation/import", () => {
     expect(sim.gen).toBe(500);
     expect(sim.dim).toBe(10);
 
-    const data = sim.simulationData.map((d) => ({
+    const data = (await Simulation.getResults(sim.simulationId)).map((d) => ({
       functionId: d.functionId,
       mutationId: d.mutationId,
       crossoverId: d.crossoverId,
       selectionId: d.selectionId,
       lowestFitness: d.lowestFitness,
     }));
-    expect(data).toEqual([
-      { functionId: 1, mutationId: 4, crossoverId: 2, selectionId: 2, lowestFitness: 2.997146999302399 },
-      { functionId: 6, mutationId: 3, crossoverId: 1, selectionId: 1, lowestFitness: 1.0924594562311541e-14 },
-    ]);
+    expect(data).toHaveLength(2);
+    expect(data).toEqual(
+      expect.arrayContaining([
+        { functionId: 1, mutationId: 4, crossoverId: 2, selectionId: 2, lowestFitness: 2.997146999302399 },
+        { functionId: 6, mutationId: 3, crossoverId: 1, selectionId: 1, lowestFitness: 1.0924594562311541e-14 },
+      ])
+    );
 
     // functions/methods derived as unique, sorted IDs from the rows.
     expect(sim.functions).toEqual([1, 6]);
@@ -90,7 +94,7 @@ describe("POST /api/v1/simulation/import", () => {
       .send({ content });
 
     expect(res.statusCode).toBe(201);
-    const sim = await Simulation.findById(res.body.simulationId);
+    const sim = await Simulation.getSimulationById(res.body.simulationId);
     expect(sim.np).toBe(15);
     expect(sim.f).toBe(0.5);
     expect(sim.cr).toBe(0.9);

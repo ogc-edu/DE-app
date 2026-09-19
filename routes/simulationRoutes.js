@@ -112,26 +112,114 @@ router.post("/import", validate(importSimulationSchema), importSimulation);
  * /api/v1/simulation/get:
  *   get:
  *     summary: Get all simulations for the authenticated user
+ *     description: >-
+ *       Cursor-paginated list (DynamoDB `LastEvaluatedKey` encoded as an opaque
+ *       base64 string). There is no `page`/offset parameter. IDs are UUID
+ *       strings, not Mongo ObjectIds.
  *     tags: [Simulation]
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: query
- *         name: page
- *         schema:
- *           type: integer
- *       - in: query
  *         name: limit
  *         schema:
  *           type: integer
+ *           minimum: 0
+ *           default: 0
+ *         description: >-
+ *           Maximum number of simulations to return. `0` (default) returns all
+ *           simulations (internally paged, capped at 1000).
+ *       - in: query
+ *         name: cursor
+ *         schema:
+ *           type: string
+ *         description: >-
+ *           Opaque cursor (`nextCursor`) from a previous response. Omit for the
+ *           first page. A malformed value returns 400.
  *       - in: query
  *         name: status
  *         schema:
  *           type: string
- *           enum: [pending, completed, failed, cancelled]
+ *           enum: [pending, running, completed, failed, cancelled]
+ *         description: Filter results by simulation status.
  *     responses:
  *       200:
- *         description: List of simulations
+ *         description: Cursor-paginated list of the authenticated user's simulations
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 simulations:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id:
+ *                         type: string
+ *                         description: Alias of `simulationId` (UUID string, not a Mongo ObjectId)
+ *                       simulationId:
+ *                         type: string
+ *                         format: uuid
+ *                       userId:
+ *                         type: string
+ *                         format: uuid
+ *                       functions:
+ *                         type: array
+ *                         items:
+ *                           type: integer
+ *                       methods:
+ *                         type: object
+ *                         properties:
+ *                           mutation:
+ *                             type: array
+ *                             items:
+ *                               type: integer
+ *                           crossover:
+ *                             type: array
+ *                             items:
+ *                               type: integer
+ *                           selection:
+ *                             type: array
+ *                             items:
+ *                               type: integer
+ *                       np:
+ *                         type: number
+ *                       f:
+ *                         type: number
+ *                       cr:
+ *                         type: number
+ *                       gen:
+ *                         type: integer
+ *                       dim:
+ *                         type: integer
+ *                       totalModels:
+ *                         type: integer
+ *                       completedModels:
+ *                         type: integer
+ *                       progress:
+ *                         type: number
+ *                       status:
+ *                         type: string
+ *                         enum: [pending, running, completed, failed, cancelled]
+ *                       bestFitness:
+ *                         type: number
+ *                         nullable: true
+ *                       createdAt:
+ *                         type: string
+ *                         format: date-time
+ *                       updatedAt:
+ *                         type: string
+ *                         format: date-time
+ *                 simulationCount:
+ *                   type: integer
+ *                   description: Number of simulations in this page
+ *                 nextCursor:
+ *                   type: string
+ *                   nullable: true
+ *                   description: Pass as `cursor` for the next page; null when exhausted
+ *       401:
+ *         description: Unauthorized
  */
 router.get("/get", getAllSimulations);
 
@@ -140,6 +228,10 @@ router.get("/get", getAllSimulations);
  * /api/v1/simulation/get/{simulationId}/results:
  *   get:
  *     summary: Get simulation results grid
+ *     description: >-
+ *       Live/polled progress plus the results grid. Results are stored as
+ *       separate DynamoDB items (never inline on the simulation). The simulation
+ *       id is a UUID string, not a Mongo ObjectId.
  *     tags: [Simulation]
  *     security:
  *       - bearerAuth: []
@@ -149,9 +241,43 @@ router.get("/get", getAllSimulations);
  *         required: true
  *         schema:
  *           type: string
+ *           format: uuid
+ *         description: Simulation UUID string
  *     responses:
  *       200:
- *         description: Simulation results data
+ *         description: Simulation status/progress and its results grid
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 simulationId:
+ *                   type: string
+ *                   format: uuid
+ *                 status:
+ *                   type: string
+ *                   enum: [pending, running, completed, failed, cancelled]
+ *                 totalModels:
+ *                   type: integer
+ *                 completedModels:
+ *                   type: integer
+ *                 progress:
+ *                   type: number
+ *                 simulationData:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       functionId:
+ *                         type: integer
+ *                       mutationId:
+ *                         type: integer
+ *                       crossoverId:
+ *                         type: integer
+ *                       selectionId:
+ *                         type: integer
+ *                       lowestFitness:
+ *                         type: number
  *       403:
  *         description: Not authorized to access this simulation
  *       404:
@@ -173,6 +299,8 @@ router.get("/get/:simulationId/results", getSimulationResults);
  *         required: true
  *         schema:
  *           type: string
+ *           format: uuid
+ *         description: Simulation UUID string
  *     responses:
  *       200:
  *         description: Simulation details
@@ -197,6 +325,8 @@ router.get("/get/:simulationId", getSingleSimulation);
  *         required: true
  *         schema:
  *           type: string
+ *           format: uuid
+ *         description: Simulation UUID string
  *     responses:
  *       200:
  *         description: Simulation deleted
@@ -221,6 +351,8 @@ router.delete("/delete/:simulationId", deleteSimulation);
  *         required: true
  *         schema:
  *           type: string
+ *           format: uuid
+ *         description: Simulation UUID string
  *     responses:
  *       200:
  *         description: Simulation cancelled
@@ -229,7 +361,7 @@ router.delete("/delete/:simulationId", deleteSimulation);
  *       404:
  *         description: Simulation not found
  *       409:
- *         description: Simulation is already in a terminal status
+ *         description: Simulation is already in a terminal status (completed, failed or cancelled)
  */
 router.post("/cancel/:simulationId", cancelSimulation);
 

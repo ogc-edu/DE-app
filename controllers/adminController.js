@@ -4,23 +4,12 @@ const sqsConfig = require("../config/sqs");
 
 const getAllUsers = async (req, res, next) => {
   try {
-    const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
-    const skip = (page - 1) * limit;
+    const cursor = req.query.cursor || undefined;
 
-    const users = await User.find()
-      .select("-refreshTokenHash")
-      .skip(skip)
-      .limit(limit)
-      .sort({ createdAt: -1 });
-    const total = await User.countDocuments();
+    const { users, nextCursor } = await User.listAll({ limit, cursor });
 
-    res.status(200).json({
-      userCount: total,
-      currentPage: page,
-      totalPages: Math.ceil(total / limit),
-      users,
-    });
+    res.status(200).json({ users, nextCursor });
   } catch (err) {
     next(err);
   }
@@ -28,11 +17,11 @@ const getAllUsers = async (req, res, next) => {
 
 const getUserById = async (req, res, next) => {
   try {
-    const user = await User.findById(req.params.id).select("-refreshTokenHash -password");
+    const user = await User.findById(req.params.id);
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
-    res.status(200).json({ user });
+    res.status(200).json({ user: User.toSafeUser(user) });
   } catch (err) {
     next(err);
   }
@@ -49,17 +38,14 @@ const toggleSuspendUser = async (req, res, next) => {
       return res.status(400).json({ message: "Cannot suspend an admin user" });
     }
 
+    const isActive = !user.isActive;
     // Suspending ends existing sessions; reactivation requires a fresh login.
-    if (user.isActive) {
-      user.refreshTokenHash = null;
-    }
-    user.isActive = !user.isActive;
-    await user.save();
+    const updated = await User.setActive(userId, isActive);
 
     res.status(200).json({
-      message: `User ${user.isActive ? "activated" : "suspended"} successfully`,
-      userId: user._id.toString(),
-      isActive: user.isActive,
+      message: `User ${isActive ? "activated" : "suspended"} successfully`,
+      userId: user.userId,
+      isActive: updated ? updated.isActive : isActive,
     });
   } catch (err) {
     next(err);
@@ -69,12 +55,19 @@ const toggleSuspendUser = async (req, res, next) => {
 const getAllSimulations = async (req, res, next) => {
   try {
     const { userId } = req.query;
-    const filter = userId ? { userId } : {};
-    const simulations = await Simulation.find(filter).sort({ createdAt: -1 });
+    const limit = parseInt(req.query.limit) || 50;
+    const cursor = req.query.cursor || undefined;
+
+    const { simulations, nextCursor } = await Simulation.listAll({
+      limit,
+      cursor,
+      userId,
+    });
 
     res.status(200).json({
       simulationCount: simulations.length,
       simulations,
+      nextCursor,
     });
   } catch (err) {
     next(err);
@@ -83,11 +76,11 @@ const getAllSimulations = async (req, res, next) => {
 
 const deleteAnySimulation = async (req, res, next) => {
   try {
-    const simulation = await Simulation.findById(req.params.id);
+    const simulation = await Simulation.getSimulationById(req.params.id);
     if (!simulation) {
       return res.status(404).json({ message: "Simulation not found" });
     }
-    await Simulation.findByIdAndDelete(req.params.id);
+    await Simulation.deleteSimulationById(req.params.id);
     res.status(200).json({
       message: "Simulation deleted successfully",
       simulationId: req.params.id,

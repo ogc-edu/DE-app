@@ -1,7 +1,10 @@
+const crypto = require("node:crypto");
 const request = require("supertest");
 const app = require("../app");
 const User = require("../models/user");
 const Simulation = require("../models/simulation");
+const { signAccessToken } = require("../utils/tokens");
+const { createAdmin } = require("./helpers");
 // Mocked in tests/setup.js — used to return canned SQS queue attributes.
 const { GetQueueAttributesCommand, __sqsSendMock } = require("@aws-sdk/client-sqs");
 
@@ -25,17 +28,16 @@ describe("Admin Endpoints", () => {
 
   beforeEach(async () => {
     const user = await User.register(regularUser.username, regularUser.email, regularUser.password);
-    userId = user._id.toString();
-    userToken = user.generateJwtToken();
+    userId = user.userId;
+    userToken = signAccessToken(user);
 
-    const admin = await User.create({
+    const admin = await createAdmin({
       username: adminUser.username,
       email: adminUser.email,
       password: adminUser.password,
-      role: "admin",
     });
-    adminId = admin._id.toString();
-    adminToken = admin.generateJwtToken();
+    adminId = admin.userId;
+    adminToken = signAccessToken(admin);
   });
 
   describe("Role-based access control", () => {
@@ -64,17 +66,30 @@ describe("Admin Endpoints", () => {
   });
 
   describe("GET /api/v1/admin/users", () => {
-    it("should list all users with pagination", async () => {
-      const res = await request(app)
-        .get("/api/v1/admin/users?page=1&limit=10")
-        .set("Authorization", `Bearer ${adminToken}`);
+    it("should list all users with cursor pagination", async () => {
+      // DynamoDB sets LastEvaluatedKey whenever the page Limit is reached, so a
+      // final empty page is possible; follow the cursor until it is exhausted.
+      const seen = [];
+      let cursor;
+      let pages = 0;
 
-      expect(res.statusCode).toBe(200);
-      expect(res.body).toHaveProperty("userCount");
-      expect(res.body).toHaveProperty("currentPage", 1);
-      expect(res.body).toHaveProperty("totalPages");
-      expect(res.body.users).toBeInstanceOf(Array);
-      expect(res.body.userCount).toBeGreaterThanOrEqual(2);
+      do {
+        const url = cursor
+          ? `/api/v1/admin/users?limit=1&cursor=${encodeURIComponent(cursor)}`
+          : "/api/v1/admin/users?limit=1";
+        const res = await request(app)
+          .get(url)
+          .set("Authorization", `Bearer ${adminToken}`);
+
+        expect(res.statusCode).toBe(200);
+        expect(res.body.users).toBeInstanceOf(Array);
+        seen.push(...res.body.users.map((u) => u.userId));
+        cursor = res.body.nextCursor;
+        pages += 1;
+      } while (cursor && pages < 10);
+
+      expect(pages).toBeGreaterThanOrEqual(2);
+      expect(seen).toEqual(expect.arrayContaining([userId, adminId]));
     });
 
     it("should not expose refresh tokens in user list", async () => {
@@ -100,7 +115,7 @@ describe("Admin Endpoints", () => {
     });
 
     it("should return 404 for non-existent user", async () => {
-      const fakeId = "507f1f77bcf86cd799439011";
+      const fakeId = crypto.randomUUID();
       const res = await request(app)
         .get(`/api/v1/admin/users/${fakeId}`)
         .set("Authorization", `Bearer ${adminToken}`);
@@ -125,19 +140,19 @@ describe("Admin Endpoints", () => {
         .post("/api/v1/login")
         .send({ email: regularUser.email, password: regularUser.password });
 
-      const before = await User.findById(userId).select("+refreshTokenHash");
+      const before = await User.findById(userId);
       expect(before.refreshTokenHash).not.toBeNull();
 
       await request(app)
         .patch(`/api/v1/admin/users/${userId}/suspend`)
         .set("Authorization", `Bearer ${adminToken}`);
 
-      const after = await User.findById(userId).select("+refreshTokenHash");
-      expect(after.refreshTokenHash).toBeNull();
+      const after = await User.findById(userId);
+      expect(after.refreshTokenHash).toBeUndefined();
     });
 
     it("should reactivate a suspended user", async () => {
-      await User.findByIdAndUpdate(userId, { isActive: false });
+      await User.setActive(userId, false);
       const res = await request(app)
         .patch(`/api/v1/admin/users/${userId}/suspend`)
         .set("Authorization", `Bearer ${adminToken}`);
@@ -156,7 +171,7 @@ describe("Admin Endpoints", () => {
     });
 
     it("should return 404 for non-existent user", async () => {
-      const fakeId = "507f1f77bcf86cd799439011";
+      const fakeId = crypto.randomUUID();
       const res = await request(app)
         .patch(`/api/v1/admin/users/${fakeId}/suspend`)
         .set("Authorization", `Bearer ${adminToken}`);
@@ -207,18 +222,18 @@ describe("Admin Endpoints", () => {
       });
 
       const res = await request(app)
-        .delete(`/api/v1/admin/simulations/${sim._id}`)
+        .delete(`/api/v1/admin/simulations/${sim.simulationId}`)
         .set("Authorization", `Bearer ${adminToken}`);
 
       expect(res.statusCode).toBe(200);
       expect(res.body).toHaveProperty("message", "Simulation deleted successfully");
 
-      const deleted = await Simulation.findById(sim._id);
+      const deleted = await Simulation.getSimulationById(sim.simulationId);
       expect(deleted).toBeNull();
     });
 
     it("should return 404 for non-existent simulation", async () => {
-      const fakeId = "507f1f77bcf86cd799439011";
+      const fakeId = crypto.randomUUID();
       const res = await request(app)
         .delete(`/api/v1/admin/simulations/${fakeId}`)
         .set("Authorization", `Bearer ${adminToken}`);
